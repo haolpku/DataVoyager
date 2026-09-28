@@ -26,6 +26,31 @@ flowchart TD
     L3 --> Export[Recipe / export]
 ```
 
+## Conversational workspace
+
+`datavoyager chat` starts a loopback HTTP server with a bundled static frontend.
+Each conversation stores a Codex thread ID. `codex-runner/src/chat.ts` starts or
+resumes the SDK thread and returns a schema-constrained decision: reply, build,
+or revise. Python validates the decision and launches a separate dataset process.
+This is application-side action dispatch; the chat controller does not execute
+shell commands to construct datasets. The existing advanced acquisition runner
+is unchanged.
+
+The controller receives recent messages and backend job snapshots, including
+sample previews. Long-running dataset jobs continue independently, so a subsequent
+chat turn can discuss progress. A single conversation can have one dataset job and
+one agent turn active at a time. All mutations are serialized by the supervisor.
+
+Every dataset version owns an isolated warehouse, output, and run directory.
+A revision reads accepted L2 content through read-only SQLite and CAS access,
+copies it into a new warehouse, then regenerates and validates QA. It preserves
+old data and does not fetch new pages. A new collection is a standalone version.
+
+Credentials live in server memory. Workers receive their own environment snapshot;
+changing API settings cannot change a running worker's provider. Settings files omit
+keys. The loopback server rejects foreign Host/Origin headers and requires a per-server
+token for mutations. It is a local single-user app, not a multi-user hosted service.
+
 ## Control flow
 
 With `build --output`, `voyager.py` calls `qa_pipeline.py`: one bounded web campaign

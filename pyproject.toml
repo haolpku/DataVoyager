@@ -43,7 +43,7 @@ dataflowwebagent-badcase = "dataflowwebagent.badcase_pipeline:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-dataflowwebagent = ["**/*.md", "**/*.yaml", "**/*.json", "**/*.jsonl", "**/*.txt", "**/*.svg", "**/*.png"]
+dataflowwebagent = ["**/*.md", "**/*.yaml", "**/*.json", "**/*.jsonl", "**/*.txt", "**/*.svg", "**/*.png", "chat/static/*.html", "chat/static/*.css", "chat/static/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

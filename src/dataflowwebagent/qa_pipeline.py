@@ -90,15 +90,7 @@ def export_qa(store: DataStore, dataset: str, output: Path) -> dict:
             "format": "alpaca", "factual_verification": "not_performed"}
 
 
-def run_qa(request: str, *, warehouse: Path, run: Path, output: Path,
-           max_pages: int = 20, focus: list[str] | None = None) -> dict:
-    if max_pages < 1:
-        raise ValueError("max_pages must be positive")
-    if output.exists() or output.with_name(output.name + ".sources.jsonl").exists():
-        raise FileExistsError("Output already exists; choose a new --output.")
-    if (run / "request.json").exists():
-        raise FileExistsError("Run already exists; choose a new --run directory.")
-    warehouse = warehouse.resolve()
+def resolve_model(warehouse: Path) -> str:
     pool = ModelPool(warehouse)
     api = {key: os.environ.get("DATAVOYAGER_" + key, "").strip() for key in ("MODEL", "BASE_URL", "API_KEY")}
     if any(api.values()):
@@ -118,6 +110,19 @@ def run_qa(request: str, *, warehouse: Path, run: Path, output: Path,
         model = pool.default_name()
     if not model:
         raise ValueError("Set DATAVOYAGER_MODEL, DATAVOYAGER_BASE_URL and DATAVOYAGER_API_KEY.")
+    return model
+
+
+def run_qa(request: str, *, warehouse: Path, run: Path, output: Path,
+           max_pages: int = 20, focus: list[str] | None = None) -> dict:
+    if max_pages < 1:
+        raise ValueError("max_pages must be positive")
+    if output.exists() or output.with_name(output.name + ".sources.jsonl").exists():
+        raise FileExistsError("Output already exists; choose a new --output.")
+    if (run / "request.json").exists():
+        raise FileExistsError("Run already exists; choose a new --run directory.")
+    warehouse = warehouse.resolve()
+    model = resolve_model(warehouse)
     run.mkdir(parents=True, exist_ok=True)
     with (run / "request.json").open("x", encoding="utf-8") as handle:
         json.dump({"objective": request, "output": str(output), "max_pages": max_pages}, handle, ensure_ascii=False, indent=2)
@@ -158,6 +163,7 @@ def _execute_qa(runner, request, warehouse, run, output, config, meter) -> dict:
             store.close()
         snapshot = progress.stop("completed")
         result.update({"usage": snapshot["usage"], "elapsed_seconds": snapshot["elapsed_seconds"], "status": "completed", "request": request, "campaign_id": report["run_id"],
+                       "source_dataset": config.l2_dataset, "qa_dataset": config.l3_dataset,
                        "run": str(run), "warehouse": str(warehouse)})
         (run / "report.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
         return result

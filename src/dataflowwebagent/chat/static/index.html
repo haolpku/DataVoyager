@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DataVoyager · 从对话到数据集</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body>
+<aside class="sidebar">
+  <a class="brand" href="/" aria-label="DataVoyager 首页"><span class="mark">↗</span>DataVoyager</a>
+  <button id="new-chat" class="new-chat">＋ 新建数据集</button>
+  <div class="section-label">你的工作空间</div><nav id="sessions" aria-label="对话列表"></nav>
+  <div class="sidebar-bottom"><span class="local-dot"></span>本地工作空间<span class="preview-label">PREVIEW</span></div>
+</aside>
+<main>
+  <header><div><span class="eyebrow">DATASET STUDIO</span><h1 id="chat-title">从一个想法开始</h1></div><button id="settings-button" class="settings-button"><span id="api-dot" class="dot"></span><span id="api-label">连接模型 API</span><span>↗</span></button></header>
+  <div class="workspace">
+    <section class="conversation" aria-label="与 DataVoyager 对话">
+      <div id="feed" class="feed" role="log" aria-live="polite">
+        <div id="welcome" class="welcome"><span class="intro-badge">A CONVERSATION AWAY</span><h2>把需求，<br>变成数据。</h2><p>描述你想让模型学会什么。<br>一起找资料、看样例，把问答打磨成训练数据。</p>
+          <div class="examples"><button data-prompt="为 Python 初学者制作中文生成器问答，附简短代码示例，优先参考官方文档。先采集 5 个页面看样例。"><span>01 / 编程教育</span>Python 生成器问答 <b>↗</b></button><button data-prompt="制作关于 PostgreSQL 索引优化的中文问答，面向有经验的开发者，优先参考官方文档。先做一小批样例。"><span>02 / 专业知识</span>PostgreSQL 索引优化 <b>↗</b></button></div>
+          <div class="workflow"><span>寻找资料</span><i>→</i><span>筛选正文</span><i>→</i><span>生成问答</span><i>→</i><span>训练文件</span></div>
+        </div><div id="messages"></div><div id="thinking" class="thinking" hidden><span class="pulse"></span>DataVoyager 正在理解你的需求…</div>
+      </div>
+      <div class="composer-wrap"><div id="notice" class="notice" role="status" hidden></div><form id="composer"><label for="prompt" class="sr-only">数据需求或修改意见</label><textarea id="prompt" rows="3" placeholder="例如：给初学者做一份 Python 问答，回答要有代码…"></textarea><div class="composer-bottom"><span>可以随时补充需求、调整风格或询问进度</span><button id="send" type="submit" aria-label="发送消息">↑</button></div></form><p class="composer-note">Enter 发送 · Shift + Enter 换行<span>来源可追溯 · 版本可保留</span></p></div>
+    </section>
+    <aside class="inspector" aria-label="数据集进度与预览">
+      <div class="inspector-title"><h2>数据工作台</h2><span id="run-status" class="status-pill">等待开始</span></div>
+      <label class="section-label" for="versions">数据版本</label><select id="versions" aria-label="选择数据版本"><option value="">还没有生成记录</option></select>
+      <div id="run-detail" class="run-detail">从左边发起一个需求，进度与样例会出现在这里。</div>
+      <div class="metric-grid"><div><strong id="pages">—</strong><span>采集页面</span></div><div><strong id="sources">—</strong><span>保留资料</span></div><div><strong id="qas">—</strong><span>QA 候选</span></div></div>
+      <div class="usage-card"><div class="card-heading"><h3>API 用量</h3><span>已报告</span></div><div class="usage-row"><span>主 Agent · 对话轮次</span><b id="agent-turns">0</b></div><div class="usage-row"><span>主 Agent · 输入 / 输出 token</span><b id="agent-tokens">0 / 0</b></div><div class="usage-divider"></div><div class="usage-row"><span>当前版本 · 模型调用</span><b id="api-calls">0</b></div><div class="usage-row"><span>当前版本 · 输入 / 输出 token</span><b id="qa-tokens">0 / 0</b></div><p id="usage-note">用量来自接口返回，不推算金额。</p></div>
+      <div class="preview-heading"><h3>样本预览</h3><span id="sample-count">最多 5 条</span></div><div id="samples" class="samples"><div class="empty-samples"><span>▤</span><p>第一条问答，正在等你的想法。</p><small>生成后可在对话中提出修改意见</small></div></div>
+      <div id="run-actions" class="run-actions" hidden><button id="cancel-run" class="stop-button" hidden>停止当前任务</button><a id="download-qa" class="download" hidden>↓ 下载 QA 数据集</a><a id="download-sources" class="source-download" hidden>下载来源记录 ↗</a></div>
+    </aside>
+  </div>
+</main>
+<dialog id="settings"><form id="settings-form"><div class="dialog-heading"><div><span class="eyebrow">MODEL CONNECTION</span><h2>连接你的模型</h2></div><button id="close-settings" type="button" aria-label="关闭设置">×</button></div><p>配置一次，开始对话和采集。</p><label>API 地址<input id="base-url" name="base-url" type="url" required placeholder="https://your-provider.example/v1"></label><label>模型名称<input id="model" name="model" required placeholder="模型在接口中的名称" autocomplete="off"></label><label>API Key<input id="api-key" name="api-key" type="password" placeholder="仅保存在服务进程内存中" autocomplete="off"></label><label>数据生成接口<select id="api-format"><option value="responses">Responses API</option><option value="chat">Chat Completions</option></select></label><p class="settings-note">对话主 agent 使用 Codex SDK，API 地址需支持 Responses。数据生成可使用同一地址的 Responses 或 Chat Completions。Key 不写入配置文件，重启后需重新填写。</p><div id="settings-error" role="alert"></div><button type="submit" class="save-settings">保存配置</button></form></dialog>
+</body></html>

@@ -14,3 +14,15 @@ in this directory. The runner defaults to `danger-full-access`; run it in a dedi
 execution environment. Its Python supervisor enforces the overall timeout.
 
 This directory is included in source distributions but not the Python wheel.
+
+## Chat controller
+
+`dist/chat.js` is a separate entry point for `datavoyager chat`. It uses the SDK's
+thread start/resume APIs, read-only sandbox, disabled shell feature, structured
+output, and abort signal. The supervisor passes connection settings through stdin;
+model prompts contain requirements and job state, not API keys. The runner emits
+thread IDs, completed-turn usage, and a structured decision. Python validates and
+executes dataset actions in separate processes. It never uses the legacy runner's
+`danger-full-access` default.
+
+Run its offline contract tests with `corepack yarn build && node --test dist/chat.test.js`.

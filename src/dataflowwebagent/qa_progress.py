@@ -28,8 +28,9 @@ def format_progress(snapshot: dict) -> str:
 
 
 class QAProgress:
-    def __init__(self, warehouse: Path, run: Path, config, meter: UsageMeter):
+    def __init__(self, warehouse: Path, run: Path, config, meter: UsageMeter, pipeline_reader=None):
         self.warehouse, self.run, self.config, self.meter = warehouse, run, config, meter
+        self.pipeline_reader = pipeline_reader
         self.started = time.monotonic()
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._loop, name="qa-progress", daemon=True)
@@ -61,11 +62,14 @@ class QAProgress:
                     "SELECT d.name, COUNT(*) FROM samples s JOIN datasets d ON d.id=s.dataset_id "
                     "WHERE d.name IN (?, ?, ?) GROUP BY d.name", tuple(counts)):
                     counts[name] = count
-            with closing(sqlite3.connect((self.warehouse / "webagent_queue.sqlite").as_uri() + "?mode=ro", uri=True, timeout=1)) as conn:
-                row = conn.execute("SELECT pipeline_json FROM campaigns WHERE dataset=? ORDER BY created_at DESC LIMIT 1",
-                                   (self.config.dataset,)).fetchone()
-                if row and row[0]:
-                    pipeline = json.loads(row[0])
+            if self.pipeline_reader:
+                pipeline = self.pipeline_reader()
+            else:
+                with closing(sqlite3.connect((self.warehouse / "webagent_queue.sqlite").as_uri() + "?mode=ro", uri=True, timeout=1)) as conn:
+                    row = conn.execute("SELECT pipeline_json FROM campaigns WHERE dataset=? ORDER BY created_at DESC LIMIT 1",
+                                       (self.config.dataset,)).fetchone()
+                    if row and row[0]:
+                        pipeline = json.loads(row[0])
         except (sqlite3.Error, ValueError) as exc:
             warning = str(exc)
         if self.status == "running":

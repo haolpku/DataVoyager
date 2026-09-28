@@ -6,7 +6,31 @@ Describe what you want to teach your model. DataVoyager finds web sources, extra
 
 [中文](README_zh.md) · [Usage guide](docs/quickstart.md) · [Architecture](docs/architecture.md)
 
-## Start with a request
+![DataVoyager chat workspace](docs/assets/chat-workspace.png)
+
+## Build it in a conversation
+
+```text
+You: Make beginner QA about Python generators. Start with a small sample.
+You: Focus more on common misconceptions, with fewer definition questions.
+You: This version looks good. Let me download it.
+```
+
+The local chat workspace keeps the conversation, sample previews, progress, usage, and dataset versions together. Changes to question style or language can reuse collected source text; a new topic starts a new collection. Previous versions remain available.
+
+After installing the Python project below, build the chat controller with Node.js 22+ and Corepack:
+
+```bash
+cd codex-runner
+corepack yarn install --immutable
+corepack yarn build
+cd ..
+datavoyager chat
+```
+
+Open **http://127.0.0.1:8765**, enter your API endpoint, model, and key, and start chatting. The conversational controller uses **Codex SDK** and requires a Responses-compatible endpoint. See the [chat workspace guide](docs/chat.md).
+
+## Or start from the command line
 
 > Create a QA dataset about Python generators for beginners. Write answers in English and include short code examples. Prefer official Python documentation.
 

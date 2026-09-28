@@ -6,7 +6,31 @@
 
 [English](README.md) · [使用说明](docs/quickstart.md) · [架构](docs/architecture.md)
 
-## 从一句话开始
+![DataVoyager chat workspace](docs/assets/chat-workspace.png)
+
+## 用对话打磨数据集
+
+```text
+你：为 Python 初学者做一份中文生成器问答，先给我看一小批。
+你：多一些容易误解的地方，少一些定义题。
+你：这版可以，下载下来。
+```
+
+网页里可以多轮补充需求、查看样例，再生成新版本。修改问法或语言时复用已有资料；扩大主题时重新采集。右侧持续展示进度、模型用量和版本记录。
+
+安装下面的 Python 项目后，再准备聊天主 agent（Node.js 22+、Corepack）：
+
+```bash
+cd codex-runner
+corepack yarn install --immutable
+corepack yarn build
+cd ..
+datavoyager chat
+```
+
+打开 **http://127.0.0.1:8765**，填写 API 地址、模型名和 Key，即可开始。聊天主 agent 使用 **Codex SDK**，需要支持 Responses API 的模型端点。详细说明见[聊天工作台](docs/chat.md)。
+
+## 从命令行开始
 
 > 为 Python 初学者制作一份关于生成器的问答数据集。用中文回答，附简短代码示例，优先参考 Python 官方文档。
 

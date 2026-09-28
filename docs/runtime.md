@@ -9,6 +9,7 @@ cover the broader acquisition engine and optional integrations.
 
 | Profile | Required components |
 |---|---|
+| Chat workspace (`chat`) | Source checkout, Python 3.10+, built Node.js SDK runner, Responses-compatible model API |
 | Prompt → QA (`build --output`) | Python 3.10+, model API with JSON output, network |
 | CLI dry-run / offline demo | Python 3.10+, base Python dependencies |
 | Offline tests / package build | `pip install -e '.[dev]'` |

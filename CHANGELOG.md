@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Add a local chat workspace with Codex SDK conversation continuation and structured action dispatch.
+- Persist conversations and dataset versions, with live progress, source-linked previews, downloads, and task cancellation.
+- Reuse accepted source text for QA revisions without modifying previous versions.
+- Separate conversation token usage from dataset model API accounting.
+- Keep API keys in process memory and pass them to isolated workers through environment variables.
+- Add direct prompt-to-QA export, strict pair validation, source manifests, and API usage reports.
+
 ## 0.1.0a1 — Initial DataVoyager import
 
 - Import DataflowWebAgent acquisition, storage, crawling and pipeline modules.

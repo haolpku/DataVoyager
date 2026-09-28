@@ -30,6 +30,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--version", action="version", version=__version__)
     sub = parser.add_subparsers(dest="command", required=True)
+    chat = sub.add_parser("chat", help="open a local multi-turn dataset chat workspace")
+    chat.add_argument("--root", type=Path, default=Path("runs/chat"))
+    chat.add_argument("--port", type=int, default=8765)
     status = sub.add_parser("status", help="show a QA run's latest progress and API usage")
     status.add_argument("--run", type=Path, required=True)
     status.add_argument("--json", action="store_true")
@@ -45,6 +48,14 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--run", type=Path)
     build.add_argument("--dry-run", action="store_true", help="print the request without network calls or writes")
     args = parser.parse_args(argv)
+    if args.command == "chat":
+        from .chat.server import serve
+        try:
+            serve(args.root, args.port)
+        except (ValueError, OSError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        return 0
     if args.command == "status":
         from .qa_progress import format_progress
         try:
