@@ -214,11 +214,12 @@ def test_cancel_terminates_actual_worker_and_preserves_job(tmp_path, monkeypatch
     app.cancel(sid, rid)
     wait_until(lambda: processes[0].poll() is not None)
     assert app.snapshot(sid)["runs"][0]["status"] == "cancelled"
+    assert app.snapshot(sid)["runs"][0]["progress"]["stage"] == "cancelled"
     assert (app.session_dir(sid) / "versions" / rid / "job.json").is_file()
     app.close()
 
 
-def test_model_cannot_revise_other_sessions_or_execute_unknown_action(tmp_path):
+def test_model_cannot_revise_other_sessions(tmp_path):
     app = Workspace(tmp_path)
     configure(app)
     a, b = app.create()["id"], app.create()["id"]

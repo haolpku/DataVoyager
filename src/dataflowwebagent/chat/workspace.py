@@ -160,6 +160,8 @@ class Workspace:
         report = read_json(root / "run" / "report.json")
         # Supervisor terminal state is authoritative after cancel/crash.
         progress["status"] = run["status"]
+        if run["status"] in {"cancelled", "interrupted", "failed"}:
+            progress["stage"] = run["status"]
         try:
             samples = preview(root)
         except (OSError, ValueError):
