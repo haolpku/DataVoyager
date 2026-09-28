@@ -1,0 +1,17 @@
+# Input for dataflowwebagent-badcase.
+badcase_domain: python_program_repair
+failure_types:
+  - SyntaxError
+  - TypeError
+  - AssertionError
+keywords:
+  - buggy fixed code pairs
+  - program repair dataset
+focus_keywords:
+  - syntax repair
+  - type repair
+  - assertion repair
+target_datasets: 8
+objective: >-
+  Build an SFT dataset for Python program repair using the supplied badcase
+  domain, including hosted datasets and authoritative web sources.

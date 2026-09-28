@@ -1,0 +1,19 @@
+# Input used to define the AIME/AMO acquisition target for the recorded run.
+badcase_domain: olympiad_math
+failure_types:
+  - exact-answer reasoning
+  - proof and expression formatting
+  - benchmark contamination
+keywords:
+  - AIME 2026
+  - olympiad mathematics
+  - mathematical reasoning SFT
+focus_keywords:
+  - strict integer answers
+  - exact symbolic expressions
+  - concise proof claims
+target_datasets: 4
+objective: >-
+  Build a benchmark-aware olympiad reasoning SFT trial from hosted math data,
+  retaining provenance and rejecting benchmark-contaminated or
+  evaluator-facing records.

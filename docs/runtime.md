@@ -1,0 +1,72 @@
+# Runtime setup and current limits
+
+## Installation profiles
+
+| Profile | Required components |
+|---|---|
+| CLI dry-run / offline demo | Python 3.10+, base Python dependencies |
+| Offline tests / package build | `pip install -e '.[dev]'` |
+| Hosted-dataset search | `.[search]`, configured model, network |
+| Kaggle integrations | `.[search,kaggle]`, Kaggle credentials when required |
+| Browser fallback | `.[browser]`, `playwright install chromium` |
+| DataFlow pipeline operators | `.[dataflow]`; individual operators may need additional models/dependencies |
+| Acquisition worker | Source checkout, Node.js, Corepack, `corepack yarn install --immutable` in `codex-runner/` |
+
+The complete acquisition worker is distributed from the source checkout. A Python
+wheel alone does not include the external `codex-runner/` directory or root examples.
+Do not advertise the wheel as a self-contained full-runtime distribution.
+
+Configuration lives in `configs/dataflowwebagent.yaml` and the packaged fallback.
+Supply `DATAFLOWWEBAGENT_MODEL`, `DATAFLOWWEBAGENT_BASE_URL`, and
+`DATAFLOWWEBAGENT_API_KEY` in the environment. Tavily and Kaggle are optional
+integrations with their own environment variables. No credentials are bundled.
+
+Managed model registration uses `env:` references. For nonstandard providers, a
+process environment variable is generated and inherited by the worker; acquisition
+start/resume refreshes it. To use that warehouse directly in an unrelated process,
+configure an appropriate persistent environment reference yourself.
+
+## Extraction and scale
+
+The generic example requests MinerU at `http://127.0.0.1:7986` and allows legacy
+extraction fallback. Configure the service or explicitly select a suitable extraction
+backend. Model names in standalone pipeline YAMLs must exist in the warehouse pool;
+campaign setup can override them with its resolved model.
+
+Default campaign settings can expand to 24 queries and use four workers. Each crawl
+has its own page budget, so these defaults are not a low-cost smoke test. Inspect
+`datavoyager dm webagent campaign start --help` and choose smaller settings first.
+Campaign task completion and pipeline acceptance are distinct: an empty crawl now
+fails, while QA factual correctness still needs a stronger validator.
+
+## Execution and network boundaries
+
+- The outer Codex worker currently requests `danger-full-access` and runs code. Use
+  a dedicated container/VM with only the needed credentials and network access.
+- HTTP redirects, including robots.txt redirects, are checked before the next hop;
+  a rejected private destination cannot trigger browser fallback.
+- DNS validation is not connection pinning. Proxy resolution, DNS rebinding, browser
+  subresources and browser redirects need stronger egress enforcement. The current
+  Playwright path is experimental and is not an SSRF-safe network boundary.
+- Agent prompts and untrusted web content require continued prompt-injection work.
+  Do not treat prompt instructions as an operating-system sandbox.
+
+## Data quality boundaries
+
+Topic filtering checks relevance signals and source evidence. Generic QA generation
+requests grounded answers, but its final validator only checks format. It does not
+establish factual correctness. Code validation is not equivalent to passing a complete
+test suite. No downstream model improvement is claimed for this alpha.
+
+Source-page manifests contain provenance and license hints, not a rights clearance.
+The recorded AIME trial is imported historical material; its offline checker verifies
+file counts and selected fields, not a new online run or independent quality audit.
+
+## Troubleshooting
+
+- **Runner unavailable:** install Node/Corepack and the locked runner dependencies.
+- **DataFlow import error:** install the `dataflow` extra and the selected operator's dependencies.
+- **Unknown model:** configure the environment or register a warehouse model.
+- **Existing request:** choose a new `--run`, or inspect/resume the existing acquisition via the advanced CLI.
+- **No pages fetched:** inspect `webcrawler_dm_runs/*/failures.jsonl`; failed tasks are retryable.
+- **No L2/L3 rows:** inspect the pipeline stage reports and topic rejection reasons.

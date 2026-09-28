@@ -1,0 +1,75 @@
+{
+  "retained": [
+    {
+      "sample_id": "smp-00026361db14077c",
+      "chars": 233,
+      "math_signals": 11
+    },
+    {
+      "sample_id": "smp-0004558285769029",
+      "chars": 118,
+      "math_signals": 10
+    },
+    {
+      "sample_id": "smp-000533b72efc2013",
+      "chars": 233,
+      "math_signals": 20
+    },
+    {
+      "sample_id": "smp-0007849f7f6d92ac",
+      "chars": 474,
+      "math_signals": 29
+    }
+  ],
+  "rejected": [
+    {
+      "sample_id": "smp-00001fa7c2173b82",
+      "reason": "not_aime_complexity_length",
+      "chars": 102,
+      "math_signals": 0
+    },
+    {
+      "sample_id": "smp-00002b84708b4d24",
+      "reason": "not_aime_complexity_length",
+      "chars": 145,
+      "math_signals": 0
+    },
+    {
+      "sample_id": "smp-00002ba02db4378b",
+      "reason": "non_aime_or_evaluator_facing_task",
+      "chars": 265,
+      "math_signals": 5
+    },
+    {
+      "sample_id": "smp-00008823aed0267e",
+      "reason": "non_aime_or_evaluator_facing_task",
+      "chars": 234,
+      "math_signals": 1
+    },
+    {
+      "sample_id": "smp-0000f252cb4a0000",
+      "reason": "non_aime_or_evaluator_facing_task",
+      "chars": 207,
+      "math_signals": 1
+    },
+    {
+      "sample_id": "smp-00010c69a0253f95",
+      "reason": "not_aime_complexity_length",
+      "chars": 101,
+      "math_signals": 0
+    },
+    {
+      "sample_id": "smp-0001f03cee88bc21",
+      "reason": "not_aime_complexity_length",
+      "chars": 72,
+      "math_signals": 6
+    },
+    {
+      "sample_id": "smp-000a69e9e0285f02",
+      "reason": "below_benchmark_difficulty_floor",
+      "chars": 355,
+      "math_signals": 11
+    }
+  ],
+  "note": "Character length and math-signal count are transparent audit proxies, not learned difficulty labels. Retained rows include analysis, generating functions, cyclic inequality proof, and nested totient reasoning; rejected rows are elementary word problems, code/multiple-choice templates, or short constant/equation tasks."
+}

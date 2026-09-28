@@ -1,0 +1,8 @@
+include README.md README_zh.md CHANGELOG.md THIRD_PARTY_NOTICES.md
+recursive-include docs *.md
+recursive-include configs *.yaml
+recursive-include examples *.py *.yaml *.json *.jsonl *.md *.html
+include codex-runner/package.json codex-runner/tsconfig.json codex-runner/yarn.lock codex-runner/README.md codex-runner/.yarnrc.yml
+recursive-include codex-runner/src *.ts
+recursive-include tests *.py
+global-exclude __pycache__ *.py[cod] .DS_Store

@@ -1,0 +1,34 @@
+{
+  "review_iteration": 8,
+  "decision": "release",
+  "total_score": 85.0,
+  "redlines": [],
+  "dimensions": [
+    {"dimension": "D1", "raw_score": 3, "weight": 15, "weighted_score": 11.25, "blocked": false, "redlines": [], "summary": "All four datasets are auditable; heterogeneous prose, currency, multiple-choice, and code schemas are handled before target-fit filtering, with explicit dataset and repository concentration counts."},
+    {"dimension": "D2", "raw_score": 3, "weight": 25, "weighted_score": 18.75, "blocked": false, "redlines": [], "summary": "Four of four outputs are independently coherent, reference-equivalent, structurally valid, degradation-free, and scored 5; calibration is effective but intentionally small."},
+    {"dimension": "D3", "raw_score": 3, "weight": 20, "weighted_score": 15.0, "blocked": false, "redlines": [], "summary": "The trial covers AIME exact-scalar capability and AMO expression/proof capability in standalone SFT form, though the four-row survivor set cannot establish full benchmark distribution coverage."},
+    {"dimension": "D4", "raw_score": 4, "weight": 12, "weighted_score": 12.0, "blocked": false, "redlines": [], "summary": "All placeholders resolve, blind generation excludes answers, reference exposure is limited to labeled repair prompts, and evaluator assembly/truncation is explicit."},
+    {"dimension": "D5", "raw_score": 4, "weight": 16, "weighted_score": 16.0, "blocked": false, "redlines": [], "summary": "The durable reasoning audit verifies 4/4 correct processes, 0 wrong-process/right-answer cases, low source-copy similarity, and independent revalidation of the one reference-repair row."},
+    {"dimension": "D6", "raw_score": 4, "weight": 12, "weighted_score": 12.0, "blocked": false, "redlines": [], "summary": "All outputs have a consistent 53-field schema containing the 35-key input union plus generated SFT fields; all original keys and non-overwritten values are preserved."}
+  ],
+  "key_evidence": {
+    "trial_rows": {"input": 12, "output": 4, "yield": 0.3333333333333333},
+    "datasets": {"input_datasets": 4, "nonzero_output_datasets": 2, "maximum_dataset_output_share": 0.75, "maximum_repository_output_share": 1.0},
+    "answer_types": {"scalar": 1, "expression": 2, "claim": 1},
+    "quality": {"answer_matches_reference": "4/4", "quality_score_5": "4/4", "degradation": "0/4", "wrong_process_right_answer": "0/4"},
+    "calibration": {"known_correct_score": 5, "adversarial_wrong_score": 1, "passed": true},
+    "field_fidelity": {"rows_checked": 4, "missing_original_fields": 0, "changed_non_sft_fields": 0, "output_fields_per_row": 53},
+    "reasoning_audit": {"process_correct": "4/4", "wrong_process_right_answer": "0/4", "blind_selected": 3, "repair_selected_and_revalidated": 1},
+    "benchmark_examples_read": 10,
+    "sample_ids": ["smp-00026361db14077c", "smp-0004558285769029", "smp-000533b72efc2013", "smp-0007849f7f6d92ac"]
+  },
+  "per_dataset_funnel_path": "trial_funnel.json",
+  "required_next_repairs": [],
+  "release_notes": [
+    "Mathematical equivalence normalization accepts harmless LaTeX variants and boxed full equalities.",
+    "Source answer normalization precedes target-fit rejection, eliminating schema-driven false drops.",
+    "The evaluator retries strict scalar parsing once and passes positive/negative calibration controls.",
+    "Capability labels distinguish AIME26 exact-scalar and AMO-Bench expression/proof training records without claiming benchmark provenance."
+    ,"Final projection preserves the complete original input schema and verifies non-SFT-overwritten values against trial_input.jsonl."
+  ]
+}

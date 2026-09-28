@@ -1,0 +1,21 @@
+{
+  "controls": [
+    {
+      "id": "known_correct",
+      "expected": "pass",
+      "record": "Evaluate this AIME/AMO-oriented SFT record.\n\nPROBLEM:\nIf x+7=12, find x.\n\nGENERATED SOLUTION:\nSubtracting 7 gives x=5. Therefore \\boxed{5}.\n\nEXPECTED FINAL ANSWER:\n5",
+      "raw": "<think>We need answer evaluate. Need follow user asks evaluate record. Need produce digit 1-5. Need inspect problem/generated solution. It's simple correct. Need independent audit. AIME/AMO-oriented? It's trivial but valid. Need maybe \"standalone task\" yes. Concise regeneration? We only evaluating. Return one digit. Should be 5.</think>\n<answer>5</answer>",
+      "score": 5,
+      "parse_error": ""
+    },
+    {
+      "id": "adversarial_wrong",
+      "expected": "fail",
+      "record": "Evaluate this AIME/AMO-oriented SFT record.\n\nPROBLEM:\nIf x+7=12, find x.\n\nGENERATED SOLUTION:\nAdding 7 gives x=19. Therefore \\boxed{19}.\n\nEXPECTED FINAL ANSWER:\n5",
+      "raw": "<think>We need answer evaluation. Need follow user: \"Evaluate this AIME/AMO-oriented SFT record. PROBLEM: If x+7=12, find x. GENERATED SOLUTION: Adding 7 gives x=19. Therefore \\boxed{19}. EXPECTED FINAL ANSWER: 5\" Need provide score 1-5. Need assess. This is straightforward but generated solution wrong: x+7=12 => subtract 7 => x=5, not adding 7 gives 19. Expected final answer 5 (maybe score? They say EXPECTED FINAL ANSWER: 5, perhaps expected final answer is 5. Need evaluate generated solution. Correct answer is 5. Generated solution says 19, incorrect. So score 1-2. Need determine suitability. Since problem simple, generated solution wrong. Return one digit N from 1 to 5. Probably 1. Need maybe note \"Adding 7\" invalid step, wrong final answer. Use exact boxed? The instruction says \"Return only one digit N from 1 to 5.\" But maybe also can include explanation? It says \"Return only one digit N\" likely final answer should be just digit. But we need maybe no explanation. Let's produce 1 or 2? We need decide between 1 and 2. The record has a fully incorrect solution and answer; problem is trivial, solution is wrong. The expected answer is 5. Score should be 1 (wrong/unsuitable). I'll return 1.</think>\n<answer>1</answer>",
+      "score": 1,
+      "parse_error": ""
+    }
+  ],
+  "passed": true
+}

@@ -1,0 +1,32 @@
+name: Offline checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e '.[dev]'
+      - run: python -m pytest -q
+      - run: python -m build
+      - run: datavoyager build 'Build a Python repair dataset' --dry-run
+      - run: python examples/offline_demo.py --warehouse runs/ci-offline
+  runner-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --global corepack
+      - run: corepack yarn install --immutable
+        working-directory: codex-runner
+      - run: corepack yarn build
+        working-directory: codex-runner

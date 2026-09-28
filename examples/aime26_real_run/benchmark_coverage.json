@@ -1,0 +1,36 @@
+{
+  "official": {
+    "aime26_records": 30,
+    "aime26_answer_shape": "strict integer",
+    "amo_records": 50,
+    "amo_answer_types": {
+      "number": 34,
+      "description": 11,
+      "set": 3,
+      "variable": 2
+    }
+  },
+  "trial": {
+    "records": 4,
+    "families": {
+      "AMO-Bench-capability": 3,
+      "AIME26-capability": 1
+    },
+    "answer_types": {
+      "expression": 2,
+      "claim": 1,
+      "scalar": 1
+    },
+    "sample_ids_by_family": {
+      "AMO-Bench-capability": [
+        "smp-00026361db14077c",
+        "smp-0004558285769029",
+        "smp-000533b72efc2013"
+      ],
+      "AIME26-capability": [
+        "smp-0007849f7f6d92ac"
+      ]
+    }
+  },
+  "interpretation": "Capability-oriented SFT coverage: scalar exact-answer reasoning develops AIME skills; expression and proof-claim reasoning develops AMO-Bench skills. These are training-side labels, not claims that source rows are benchmark instances."
+}

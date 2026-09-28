@@ -1,0 +1,181 @@
+{
+  "stages": [
+    {
+      "stage": "input",
+      "rows": 12
+    },
+    {
+      "stage": "aime26_amo_sft_step1",
+      "rows": 12
+    },
+    {
+      "stage": "aime26_amo_sft_step2",
+      "rows": 4
+    },
+    {
+      "stage": "aime26_amo_sft_step3",
+      "rows": 4
+    },
+    {
+      "stage": "aime26_amo_sft_step4",
+      "rows": 4
+    },
+    {
+      "stage": "aime26_amo_sft_step5",
+      "rows": 4
+    },
+    {
+      "stage": "aime26_amo_sft_step6",
+      "rows": 4
+    },
+    {
+      "stage": "aime26_amo_sft_step7",
+      "rows": 4
+    },
+    {
+      "stage": "aime26_amo_sft_step8",
+      "rows": 4
+    },
+    {
+      "stage": "aime26_amo_sft_step9",
+      "rows": 4
+    },
+    {
+      "stage": "aime26_amo_sft_step10",
+      "rows": 4
+    },
+    {
+      "stage": "aime26_amo_sft_step11",
+      "rows": 4
+    }
+  ],
+  "rejection_reasons": {
+    "not_aime_complexity_length": 4,
+    "missing_reference_answer": 1,
+    "non_aime_or_evaluator_facing_task": 2,
+    "accepted_seed": 4,
+    "below_benchmark_difficulty_floor": 1
+  },
+  "branch_counts": {
+    "format_or_target_incompatible": 6,
+    "repairable_answer_schema": 1,
+    "accepted_expression": 2,
+    "accepted_claim": 1,
+    "accepted_scalar": 1,
+    "quality_or_safety_reject": 1
+  },
+  "per_dataset": {
+    "ds-bbb4d390af5920de": {
+      "input": 3,
+      "output": 0,
+      "stages": {
+        "input": 3,
+        "aime26_amo_sft_step1": 3,
+        "aime26_amo_sft_step2": 0,
+        "aime26_amo_sft_step3": 0,
+        "aime26_amo_sft_step4": 0,
+        "aime26_amo_sft_step5": 0,
+        "aime26_amo_sft_step6": 0,
+        "aime26_amo_sft_step7": 0,
+        "aime26_amo_sft_step8": 0,
+        "aime26_amo_sft_step9": 0,
+        "aime26_amo_sft_step10": 0,
+        "aime26_amo_sft_step11": 0
+      },
+      "rejections": {
+        "not_aime_complexity_length": 2,
+        "non_aime_or_evaluator_facing_task": 1
+      },
+      "yield": 0.0
+    },
+    "ds-86a2ad6c86def429": {
+      "input": 3,
+      "output": 0,
+      "stages": {
+        "input": 3,
+        "aime26_amo_sft_step1": 3,
+        "aime26_amo_sft_step2": 0,
+        "aime26_amo_sft_step3": 0,
+        "aime26_amo_sft_step4": 0,
+        "aime26_amo_sft_step5": 0,
+        "aime26_amo_sft_step6": 0,
+        "aime26_amo_sft_step7": 0,
+        "aime26_amo_sft_step8": 0,
+        "aime26_amo_sft_step9": 0,
+        "aime26_amo_sft_step10": 0,
+        "aime26_amo_sft_step11": 0
+      },
+      "rejections": {
+        "missing_reference_answer": 1,
+        "non_aime_or_evaluator_facing_task": 1,
+        "not_aime_complexity_length": 1
+      },
+      "yield": 0.0
+    },
+    "ds-bbccd51f7cfcc9cf": {
+      "input": 3,
+      "output": 1,
+      "stages": {
+        "input": 3,
+        "aime26_amo_sft_step1": 3,
+        "aime26_amo_sft_step2": 1,
+        "aime26_amo_sft_step3": 1,
+        "aime26_amo_sft_step4": 1,
+        "aime26_amo_sft_step5": 1,
+        "aime26_amo_sft_step6": 1,
+        "aime26_amo_sft_step7": 1,
+        "aime26_amo_sft_step8": 1,
+        "aime26_amo_sft_step9": 1,
+        "aime26_amo_sft_step10": 1,
+        "aime26_amo_sft_step11": 1
+      },
+      "rejections": {
+        "not_aime_complexity_length": 1,
+        "accepted_seed": 1,
+        "below_benchmark_difficulty_floor": 1,
+        "accepted_generated": 1
+      },
+      "yield": 0.3333333333333333
+    },
+    "ds-c2005a6bd7d159b7": {
+      "input": 3,
+      "output": 3,
+      "stages": {
+        "input": 3,
+        "aime26_amo_sft_step1": 3,
+        "aime26_amo_sft_step2": 3,
+        "aime26_amo_sft_step3": 3,
+        "aime26_amo_sft_step4": 3,
+        "aime26_amo_sft_step5": 3,
+        "aime26_amo_sft_step6": 3,
+        "aime26_amo_sft_step7": 3,
+        "aime26_amo_sft_step8": 3,
+        "aime26_amo_sft_step9": 3,
+        "aime26_amo_sft_step10": 3,
+        "aime26_amo_sft_step11": 3
+      },
+      "rejections": {
+        "accepted_seed": 3,
+        "accepted_generated": 3
+      },
+      "yield": 1.0
+    }
+  },
+  "repository_contribution": {
+    "TIGER-Lab/MathInstruct": {
+      "input": 3,
+      "output": 0,
+      "output_share": 0.0
+    },
+    "microsoft/orca-math-word-problems-200k": {
+      "input": 3,
+      "output": 0,
+      "output_share": 0.0
+    },
+    "siyanzhao/Openthoughts_math_30k_opsd": {
+      "input": 6,
+      "output": 4,
+      "output_share": 1.0
+    }
+  }
+}

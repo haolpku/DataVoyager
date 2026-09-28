@@ -1,0 +1,26 @@
+{
+  "rows_checked": 4,
+  "failures": [],
+  "per_row": {
+    "smp-00026361db14077c": {
+      "original_fields": 29,
+      "missing_fields": [],
+      "changed_non_sft_fields": []
+    },
+    "smp-0004558285769029": {
+      "original_fields": 29,
+      "missing_fields": [],
+      "changed_non_sft_fields": []
+    },
+    "smp-000533b72efc2013": {
+      "original_fields": 29,
+      "missing_fields": [],
+      "changed_non_sft_fields": []
+    },
+    "smp-0007849f7f6d92ac": {
+      "original_fields": 31,
+      "missing_fields": [],
+      "changed_non_sft_fields": []
+    }
+  }
+}

@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dataflowwebagent"
+version = "0.1.0a1"
+description = "DataVoyager: from natural-language requirements to traceable domain datasets"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "httpx>=0.27",
+  "pydantic>=2.0",
+  "PyYAML>=6.0",
+  "tomlkit>=0.13",
+]
+
+[project.optional-dependencies]
+search = [
+  "datasets>=2.20",
+  "langchain-core>=0.3",
+  "langchain-openai>=0.3",
+  "langchain-community>=0.3",
+]
+browser = [
+  "playwright>=1.45",
+  "playwright-stealth>=2.0.0",
+]
+dataflow = ["open-dataflow>=1.0"]
+kaggle = ["kaggle>=1.6", "kagglehub>=0.3"]
+dev = ["pytest>=8.0", "build>=1.2"]
+
+[project.urls]
+Repository = "https://github.com/haolpku/DataVoyager"
+Issues = "https://github.com/haolpku/DataVoyager/issues"
+
+[project.scripts]
+datavoyager = "dataflowwebagent.voyager:main"
+dataflowwebagent = "dataflowwebagent.skills.ObtainerCLI.cli:main"
+dataflowwebagent-badcase = "dataflowwebagent.badcase_pipeline:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+dataflowwebagent = ["**/*.md", "**/*.yaml", "**/*.json", "**/*.jsonl", "**/*.txt", "**/*.svg", "**/*.png"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

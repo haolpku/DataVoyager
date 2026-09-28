@@ -1,0 +1,18 @@
+{
+  "recorded_run": "aime26_amo_gpt56sol_deepseek_resume_20260830",
+  "phase": "completed",
+  "review_iteration": 8,
+  "review_decision": "release",
+  "review_score": 85.0,
+  "input_rows": 12,
+  "output_rows": 4,
+  "dropped_rows": 8,
+  "full_input_rows_reserved": 20,
+  "full_input_processed": false,
+  "benchmark_samples_reviewed": 10,
+  "answer_types": {
+    "scalar": 1,
+    "expression": 2,
+    "claim": 1
+  }
+}

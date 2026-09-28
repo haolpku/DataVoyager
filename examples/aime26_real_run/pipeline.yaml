@@ -1,0 +1,21 @@
+# Operator contract recorded from the real AIME26 + AMO trial.
+name: aime26_amo_sft
+mode: trial_run
+input: trial_input.jsonl
+output: trial_output.jsonl
+operators:
+  - PandasOperator: normalize_source_fields
+  - GeneralFilter: seed_rejection_reason_is_empty
+  - FormatStrPromptedGenerator: blind_independent_reasoning
+  - FormatStrPromptedGenerator: reference_constrained_repair_1
+  - FormatStrPromptedGenerator: reference_constrained_repair_2
+  - PandasOperator: normalize_generated_fields
+  - GeneralFilter: correctness_and_format
+  - PromptedEvaluator: quality_score_1_to_5
+  - GeneralFilter: quality_score_at_least_4
+  - PandasOperator: preserve_input_union_and_project_sft
+contracts:
+  benchmark: "AIME_2026 scalar answers plus AMO-Bench expressions/proof claims"
+  training: "standalone olympiad problem, fresh concise derivation, one boxed answer"
+  contamination_ngram: 13
+  source_cot_policy: "never copy source chain of thought"

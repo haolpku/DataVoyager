@@ -1,0 +1,174 @@
+import os
+import json
+from pathlib import Path
+from dataflowwebagent.logger import get_logger
+
+logger = get_logger()
+
+class PromptLoader:
+    """
+    PromptLoader —— 统一管理并加载所有 prompt 配置文件的工具类。
+
+    特点：
+    - 自动扫描指定目录下所有以 `_prompt.json` 结尾的文件
+    - 自动扫描 `<prompt_type>/<prompt_name>.md` 单文件 prompt
+    - 自动按文件名前缀创建 prompt 分组（如 system_prompt.json → system）
+    - 提供类似字典的索引方式：loader(prompt_type="system", prompt_name="default_prompt")
+    - 若缺少必要的 prompt（如 system/default_prompt）会直接报错，避免隐藏问题
+    """
+
+    def __init__(self,
+                 prompt_template_dir: str = None):
+        """
+        初始化 PromptLoader
+
+        Args:
+            prompt_template_dir:
+                prompt 模板所在目录。
+                若为 None，则默认使用当前文件所在目录。
+                注意：会自动加载 `_prompt.json` 和 `<prompt_type>/<prompt_name>.md`。
+        """
+        default_dir = os.path.dirname(os.path.abspath(__file__))
+
+        self.prompt_template_dir = prompt_template_dir or default_dir
+        logger.info(f'Set prompt template dir as: {self.prompt_template_dir}')
+        
+        self.prompt_dict = {}
+        self.load_prompts()
+    
+    def load_prompts(self):
+        """
+        Load JSON prompts first, then Markdown prompts.
+
+        JSON keeps backward compatibility. Markdown files use:
+            <prompt_template_dir>/<prompt_type>/<prompt_name>.md
+
+        Markdown prompts override same-name JSON prompts, which enables
+        incremental migration and A/B comparison.
+        """
+        self._load_json_prompts()
+        self._load_markdown_prompts()
+        self.check()
+
+    def _load_json_prompts(self):
+        list_files = os.listdir(self.prompt_template_dir)
+        matched_files = []
+        for filename in sorted(list_files):
+            if filename.endswith("_prompt.json"):
+                matched_files.append(filename)
+
+        for match in matched_files:
+            match_path = os.path.join(self.prompt_template_dir, match)
+            prefix = match.replace('_prompt.json', '')
+            try:
+                with open(match_path, encoding='utf-8') as f:
+                    prompt_dict = json.load(f)
+                
+              
+                has_nested_structure = any(k in prompt_dict for k in ['system', 'task'])
+                
+                if has_nested_structure:
+                    # Nested structure (like obtainer_prompt.json)
+                    # Merge prompts by prompt_type (system, task, etc.)
+                    for prompt_type, prompts in prompt_dict.items():
+                        if prompt_type not in self.prompt_dict:
+                            self.prompt_dict[prompt_type] = {}
+                        # Merge prompts within the same prompt_type
+                        if isinstance(prompts, dict):
+                            self.prompt_dict[prompt_type].update(prompts)
+                else:
+                    # Flat structure (like system_prompt.json)
+                    # Merge all prompts into 'system' prompt_type
+                    if prefix not in self.prompt_dict:
+                        self.prompt_dict[prefix] = {}
+                    if isinstance(prompt_dict, dict):
+                        self.prompt_dict[prefix].update(prompt_dict)
+                        
+            except (FileNotFoundError, json.JSONDecodeError) as e:
+                logger.error(f"Failed to load prompt file '{match_path}': {e}")
+                raise RuntimeError(f"Error loading prompt file '{match_path}': {e}")
+
+    def _load_markdown_prompts(self):
+        root = Path(self.prompt_template_dir)
+        if not root.exists():
+            raise RuntimeError(f"Prompt template dir not found: {root}")
+        for prompt_type_dir in sorted(root.iterdir()):
+            if not prompt_type_dir.is_dir():
+                continue
+            prompt_type = prompt_type_dir.name
+            for prompt_path in sorted(prompt_type_dir.glob("*.md")):
+                prompt_name = prompt_path.stem
+                try:
+                    content = prompt_path.read_text(encoding="utf-8")
+                    content = self._strip_frontmatter(content)
+                    self.prompt_dict.setdefault(prompt_type, {})
+                    self.prompt_dict[prompt_type][prompt_name] = content
+                except OSError as e:
+                    logger.error(f"Failed to load prompt markdown '{prompt_path}': {e}")
+                    raise RuntimeError(f"Error loading prompt markdown '{prompt_path}': {e}")
+
+    @staticmethod
+    def _strip_frontmatter(content: str) -> str:
+        if not content.startswith("---\n"):
+            return content
+        end = content.find("\n---\n", 4)
+        if end == -1:
+            return content
+        return content[end + len("\n---\n"):]
+
+    def iter_prompt_keys(self):
+        for prompt_type in sorted(self.prompt_dict):
+            for prompt_name in sorted(self.prompt_dict[prompt_type]):
+                yield prompt_type, prompt_name
+        
+    def check(self):
+        """
+        检查是否存在必要的 prompt 类型。
+
+        当前要求：
+        - 必须至少存在 'system' 这个 prompt 类型
+
+        若未找到会直接抛 AssertionError，避免运行时报未知错误。
+        """
+        required_keys = ['system']
+        for key in required_keys:
+            if key not in self.prompt_dict:
+                logger.error(
+                    f"Missing required prompt dict key: '{key}' "
+                    f"in prompt_dict = {self.prompt_dict}"
+                )
+                raise AssertionError(f"Missing required prompt dict key: '{key}'")
+    
+    def __call__(self, prompt_type: str = 'system', prompt_name: str = 'default_prompt'):
+        """
+        获取指定类型与名称的 prompt 文本。
+
+        使用方式示例：
+            loader = PromptLoader("./prompts")
+            prompt = loader(prompt_type="system", prompt_name="default_prompt")
+
+        Args:
+            prompt_type: prompt 文件名前缀，如 "system"
+            prompt_name: JSON 文件中的某个键，如 "default_prompt"
+
+        Returns:
+            对应的 prompt 字符串
+
+        Raises:
+            AssertionError：当 prompt_type 或 prompt_name 不存在时
+        """
+        if prompt_type not in self.prompt_dict:
+            logger.error(
+                f"Missing required prompt dict key: '{prompt_type}' "
+                f"in prompt_dict = {self.prompt_dict}"
+            )
+            raise AssertionError(f"Missing required prompt dict key: '{prompt_type}'")
+
+        if prompt_name not in self.prompt_dict[prompt_type]:
+            logger.error(
+                f"Missing required prompt key: '{prompt_name}' "
+                f"in prompt_dict['prompt_type'] = {self.prompt_dict[prompt_type]}"
+            )
+            raise AssertionError(f"Missing required prompt key: '{prompt_name}'")
+        
+        return self.prompt_dict[prompt_type][prompt_name]

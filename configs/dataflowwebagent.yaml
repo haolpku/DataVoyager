@@ -1,0 +1,11 @@
+# Standalone DataflowWebAgent runtime configuration.
+# Keep credentials in environment variables; this file is safe to commit.
+codex_model: "env:DATAFLOWWEBAGENT_MODEL"
+codex_base_url: "env:DATAFLOWWEBAGENT_BASE_URL"
+codex_api_key: "env:DATAFLOWWEBAGENT_API_KEY"
+integrations:
+  tavily:
+    api_key: "env:TAVILY_API_KEY"
+  kaggle:
+    username: "env:KAGGLE_USERNAME"
+    key: "env:KAGGLE_KEY"
