@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add reproducible finance/medical QA evaluation, fixed-source language/style controls, source-quote audits, and reported API accounting; publish the 100/1000-target baseline results and limitations.
+- Allow model configurations to omit unsupported sampling parameters for reasoning-model audits.
 - Separate the QA crawl budget from discovery candidates; a one-page run can inspect up to 50 links per page.
 - Recognize sibling subdomains using the bundled public suffix list, and rank link candidates by query overlap and documentation navigation before truncating.
 - Write each WebAgent tool step to `trace.jsonl`, retaining diagnostics when discovery fails or is interrupted.

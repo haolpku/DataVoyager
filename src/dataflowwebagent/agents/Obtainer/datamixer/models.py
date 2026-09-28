@@ -36,11 +36,11 @@ class ModelSpec:
     response_format: str = "openaichat"
     model: str = ""
     note: str = ""
-    temperature: float = DEFAULTS["temperature"]
+    temperature: float | None = DEFAULTS["temperature"]
     max_tokens: int = DEFAULTS["max_tokens"]
     timeout: int = DEFAULTS["timeout"]
     max_concurrency: int = DEFAULTS["max_concurrency"]
-    top_p: float = DEFAULTS["top_p"]
+    top_p: float | None = DEFAULTS["top_p"]
     extra: dict = field(default_factory=dict)
     telemetry_key: str = ""
 

@@ -59,7 +59,7 @@ def _chat_payload(spec: ModelSpec, messages, json_mode: bool) -> dict:
     }
     if json_mode:
         p["response_format"] = {"type": "json_object"}
-    return p
+    return {key: value for key, value in p.items() if value is not None}
 
 
 def _responses_payload(spec: ModelSpec, messages, json_mode: bool) -> dict:
@@ -73,7 +73,7 @@ def _responses_payload(spec: ModelSpec, messages, json_mode: bool) -> dict:
     }
     if json_mode:
         p["text"] = {"format": {"type": "json_object"}}
-    return p
+    return {key: value for key, value in p.items() if value is not None}
 
 
 def _extract_chat(resp: dict) -> str:

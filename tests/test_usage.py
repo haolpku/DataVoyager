@@ -8,6 +8,15 @@ from dataflowwebagent.agents.Obtainer.datamixer.models import ModelPool, ModelSp
 from dataflowwebagent.agents.Obtainer.datamixer.telemetry import UsageMeter
 
 
+@pytest.mark.parametrize("payload", [llm._responses_payload, llm._chat_payload])
+def test_sampling_parameters_can_be_omitted_for_reasoning_models(payload):
+    spec = ModelSpec(name="judge", api_url="https://model.invalid", temperature=None, top_p=None)
+    body = payload(spec, [], True)
+    assert "temperature" not in body and "top_p" not in body
+    default = payload(ModelSpec(name="regular", api_url="https://model.invalid"), [], True)
+    assert default["temperature"] == 0.0 and default["top_p"] == 1.0
+
+
 @pytest.mark.parametrize("wire,reply", [
     ("openaichat", {"choices": [{"message": {"content": "ok"}}], "usage": {"prompt_tokens": 11, "completion_tokens": 7}}),
     ("response", {"output_text": "ok", "usage": {"input_tokens": 11, "output_tokens": 7}}),
