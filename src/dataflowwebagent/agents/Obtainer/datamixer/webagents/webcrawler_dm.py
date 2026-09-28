@@ -28,6 +28,8 @@ from typing import Any, Callable
 from urllib.parse import parse_qsl, quote_plus, unquote, urlencode, urljoin, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 
+import tldextract
+
 from .. import llm
 from ..models import ModelPool
 from ..store import DataStore
@@ -425,12 +427,22 @@ def _hostname(url: str) -> str:
         return ""
 
 
+# Use the bundled public-suffix snapshot: no network or shared cache on startup.
+# Private suffixes keep independent tenants such as *.github.io separate.
+_SITE_EXTRACTOR = tldextract.TLDExtract(
+    cache_dir=None, suffix_list_urls=(), include_psl_private_domains=True,
+)
+
+
 def _same_site(host: str, root_host: str) -> bool:
-    return bool(
-        host and root_host
-        and (host == root_host or host.endswith("." + root_host)
-             or root_host.endswith("." + host))
-    )
+    host, root_host = host.lower().rstrip("."), root_host.lower().rstrip(".")
+    if not host or not root_host:
+        return False
+    if host == root_host:
+        return True
+    left, right = _SITE_EXTRACTOR(host), _SITE_EXTRACTOR(root_host)
+    return bool(left.suffix and right.suffix
+                and left.top_domain_under_public_suffix == right.top_domain_under_public_suffix)
 
 
 def _looks_like_html_url(url: str) -> bool:
@@ -515,9 +527,10 @@ def extract_related_links(
     max_links: int,
     same_domain_only: bool,
 ) -> list[LinkCandidate]:
-    """Extract a bounded set of crawlable links without semantic heuristics."""
+    """Rank navigation candidates; the LLM still decides source relevance."""
 
-    del query  # Relevance is judged by the tool-calling LLM, not keyword rules.
+    query_terms = set(re.findall(r"[^\W_]+", query.casefold()))
+    query_terms -= {"a", "an", "and", "for", "in", "of", "the", "to", "with"}
     parser = parse_page(page.html)
     root_host = _hostname(page.final_url)
     seen: set[str] = set()
@@ -533,13 +546,17 @@ def extract_related_links(
         same = _same_site(host, root_host)
         if same_domain_only and not same:
             continue
+        terms = set(re.findall(r"[^\W_]+", (anchor + " " + unquote(urlsplit(url).path)).casefold()))
+        overlap = len(query_terms & terms)
+        navigation = bool(terms & {"doc", "docs", "documentation", "tutorial", "guide", "reference", "文档", "教程"})
         ranked.append(LinkCandidate(
             url=url,
             anchor=anchor[:300],
-            score=1.0 if same else 0.0,
+            score=float(overlap) + (0.25 if navigation else 0.0) + (0.1 if same else 0.0),
             same_domain=same,
         ))
-    ranked.sort(key=lambda item: (-item.score, len(item.url), item.url))
+    # Stable ties preserve document order instead of preferring short URLs.
+    ranked.sort(key=lambda item: -item.score)
     return ranked[:max_links]
 
 
@@ -1831,6 +1848,7 @@ class ToolCallingWebAgentKernel:
     def __init__(self, config: WebCrawlerDMConfig, *, root: str):
         self.config = config
         self.model_spec = ModelPool(root).get(config.model) if config.model else None
+        self.trace_callback: Callable[[dict[str, Any]], None] | None = None
 
     def discover(
         self,
@@ -1847,6 +1865,7 @@ class ToolCallingWebAgentKernel:
         tool_counts: dict[str, int] = {}
         terminal_tools = {"submit_resource_urls", "submit_resource_url"}
         for step in range(1, self.config.max_steps + 1):
+            step_started = time.monotonic()
             state = {
                 "query": query,
                 "search_provider": (
@@ -1926,6 +1945,11 @@ class ToolCallingWebAgentKernel:
                 "reason": reason[:500],
                 "observation": compact,
             })
+            if self.trace_callback:
+                # Keep full tool evidence on disk; only the model's observation
+                # is compacted to its context budget.
+                self.trace_callback({**trace[-1], "observation": observation,
+                                     "elapsed_seconds": round(time.monotonic() - step_started, 3)})
             recent.append({"tool": tool, "observation": compact})
             if tool in terminal_tools and observation.get("submitted"):
                 return list(tools.submitted_urls), trace, step
@@ -2019,6 +2043,18 @@ class WebCrawlerDMAgent(WebAgent):
         progress_path = run_dir / "progress.json"
         manifest = run_dir / "pages.jsonl"
         failure_manifest = run_dir / "failures.jsonl"
+        trace_path = run_dir / "trace.jsonl"
+        trace_path.touch(exist_ok=False)
+
+        def record_step(step: dict[str, Any]) -> None:
+            serialized = json.dumps(step, ensure_ascii=False)
+            key = kernel.model_spec.resolved_key() if kernel.model_spec else ""
+            if key:
+                serialized = serialized.replace(key, "[redacted]")
+            with trace_path.open("a", encoding="utf-8") as handle:
+                handle.write(serialized + "\n")
+
+        kernel.trace_callback = record_step
         self._write_progress(progress_path, {
             "run_id": run_id,
             "status": "running",
@@ -2030,6 +2066,7 @@ class WebCrawlerDMAgent(WebAgent):
             "pages_ingested": 0,
             "pages_failed": 0,
             "failure_manifest": str(failure_manifest),
+            "trace_path": str(trace_path),
         })
         try:
             selected_urls, trace, steps = kernel.discover(query, tools)
@@ -2040,6 +2077,7 @@ class WebCrawlerDMAgent(WebAgent):
                 "phase": "discover",
                 "query": query,
                 "error": f"{type(exc).__name__}: {exc}"[:2000],
+                "trace_path": str(trace_path),
             })
             raise
         selected_url = selected_urls[0]

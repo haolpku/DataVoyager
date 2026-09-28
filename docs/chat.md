@@ -47,6 +47,9 @@ You: What has finished, and how much API usage has been reported?
 The agent chooses among a reply, new collection, and revision using existing sources.
 Its complete accumulated request is saved with each version. Initial sample runs
 normally use a five-page budget. A page budget is not a QA quota or a monetary cap.
+The collection budget does not restrict the number of navigation choices: discovery
+can inspect up to 50 links per page, even for a one-page sample. Link ranking helps
+navigation; it does not replace the model's source-quality judgment.
 
 - **New collection:** discovers sources and creates an independent version. It does
   not automatically append to or merge with old versions.
@@ -78,6 +81,13 @@ charges are not included. Stopped runs retain their last snapshot and finished-c
 usage for an interrupted in-flight request may be unavailable.
 
 ## Versions and recovery
+
+Each crawl writes completed tool steps to
+`warehouse/webcrawler_dm_runs/<crawl-id>/trace.jsonl` within its version directory.
+The trace records tool arguments, observations, and reported errors after each step,
+so completed steps survive discovery failures or cancellation. An in-flight tool
+may not have a recorded result. The configured model key is redacted. Traces contain
+search queries and webpage excerpts; review them before sharing.
 
 By default the app saves state in `runs/chat`:
 

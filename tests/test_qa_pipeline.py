@@ -142,10 +142,12 @@ def test_prompt_api_environment_is_sufficient_and_key_is_not_persisted(tmp_path,
         assert model.model == "my-model"
         assert model.api_url == "https://model.invalid/v1/chat/completions"
         assert model.resolved_key() == "secret-value"
+        assert config.webagent_config["max_pages"] == 1
+        assert config.webagent_config["max_links_per_page"] >= 20
         return {"status": "failed"}
     monkeypatch.setattr(qa_pipeline.WebAgentCampaignRunner, "start", start)
     with pytest.raises(RuntimeError):
-        qa_pipeline.run_qa("Python QA", warehouse=tmp_path / "warehouse", run=tmp_path / "run", output=tmp_path / "train.jsonl")
+        qa_pipeline.run_qa("Python QA", warehouse=tmp_path / "warehouse", run=tmp_path / "run", output=tmp_path / "train.jsonl", max_pages=1)
     registry = (tmp_path / "warehouse" / "models.json").read_text()
     assert "secret-value" not in registry
     assert "env:DATAVOYAGER_API_KEY" in registry

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Separate the QA crawl budget from discovery candidates; a one-page run can inspect up to 50 links per page.
+- Recognize sibling subdomains using the bundled public suffix list, and rank link candidates by query overlap and documentation navigation before truncating.
+- Write each WebAgent tool step to `trace.jsonl`, retaining diagnostics when discovery fails or is interrupted.
 - Add a local chat workspace with Codex SDK conversation continuation and structured action dispatch.
 - Persist conversations and dataset versions, with live progress, source-linked previews, downloads, and task cancellation.
 - Reuse accepted source text for QA revisions without modifying previous versions.

@@ -137,7 +137,8 @@ def run_qa(request: str, *, warehouse: Path, run: Path, output: Path,
         auto_pipeline=str(pipeline), pipeline_model=model, pipeline_batch_size=2,
         focus_keywords=[request, *(focus or [])],
         webagent_config={"model": model, "browser_backend": "httpx", "max_pages": max_pages,
-                         "max_depth": 1, "max_links_per_page": max_pages,
+                         # Discovery needs alternatives even when collecting one page.
+                         "max_depth": 1, "max_links_per_page": 50,
                          "max_steps": 16, "soft_step_limit": 10, "max_search_calls": 3},
     )
     runner = WebAgentCampaignRunner(warehouse)
