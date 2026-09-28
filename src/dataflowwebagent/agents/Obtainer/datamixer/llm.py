@@ -16,6 +16,7 @@ is required.
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 from dataclasses import replace
@@ -28,6 +29,7 @@ from dataflowwebagent.schema.model_pool import (
     responses_url,
 )
 from .models import ModelSpec
+from .telemetry import meter_for
 
 
 def _post(url: str, payload: dict, api_key: str, timeout: int) -> dict:
@@ -102,15 +104,22 @@ def _extract_responses(resp: dict) -> str:
 
 def _call(spec: ModelSpec, messages, json_mode: bool) -> str:
     spec = _proxy_spec_if_available(spec)
-    if spec.response_format == "openaichat":
-        resp = _post(spec.api_url, _chat_payload(spec, messages, json_mode),
-                     spec.resolved_key(), spec.timeout)
-        return _extract_chat(resp)
-    if spec.response_format == "response":
-        resp = _post(spec.api_url, _responses_payload(spec, messages, json_mode),
-                     spec.resolved_key(), spec.timeout)
-        return _extract_responses(resp)
-    raise ValueError(f"unknown response_format: {spec.response_format!r}")
+    if spec.response_format not in {"openaichat", "response"}:
+        raise ValueError(f"unknown response_format: {spec.response_format!r}")
+    meter = meter_for(spec.telemetry_key)
+    call_id = meter.start() if meter else 0
+    started = time.monotonic()
+    response = None
+    failed = True
+    try:
+        payload = (_chat_payload if spec.response_format == "openaichat" else _responses_payload)(spec, messages, json_mode)
+        response = _post(spec.api_url, payload, spec.resolved_key(), spec.timeout)
+        result = (_extract_chat if spec.response_format == "openaichat" else _extract_responses)(response)
+        failed = False
+        return result
+    finally:
+        if meter:
+            meter.finish(call_id, spec.model, response, failed, time.monotonic() - started)
 
 
 def _proxy_spec_if_available(spec: ModelSpec) -> ModelSpec:

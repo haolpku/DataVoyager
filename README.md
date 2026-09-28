@@ -1,176 +1,82 @@
 # DataVoyager
 
-### From natural language to traceable domain datasets
+**Turn a prompt into a QA training dataset.**
 
-**Describe the dataset. Let agents discover, collect, and curate it.**
+Describe what you want to teach your model. DataVoyager finds web sources, extracts relevant text, and turns it into question–answer pairs. You get a JSONL training file, a source record for each pair, and a report of model API usage.
 
-[中文说明](README_zh.md) · [Architecture](docs/architecture.md) · [Runtime & limitations](docs/runtime.md) · [Roadmap](docs/roadmap.md)
+[中文](README_zh.md) · [Usage guide](docs/quickstart.md) · [Architecture](docs/architecture.md)
 
-DataVoyager connects natural-language data requirements to hosted-dataset discovery,
-web acquisition, and configurable processing pipelines. It brings source records,
-derived samples, quality decisions, and lineage into one local warehouse.
+## Start with a request
 
-> **Alpha: `0.1.0a1`.** The current release is a developer preview. It includes an
-> acquisition runtime and offline regression tests; it is not a benchmarked guarantee
-> of dataset quality or downstream model improvement. The default QA validator checks
-> structure, not factual correctness. See [limitations](docs/runtime.md).
+> Create a QA dataset about Python generators for beginners. Write answers in English and include short code examples. Prefer official Python documentation.
 
-```text
-"Build a Python type-error repair dataset for beginners"
-                         │
-              Natural-language request / badcase report
-                         │
-                 Acquisition worker
-                 ┌───────┴────────┐
-          Hosted datasets     WebAgent campaigns
-          Search / download    Search / inspect / crawl
-                 └───────┬────────┘
-                    DataMixer warehouse
-                         │
-         DataFlow + custom operators + model calls
-                         │
-             Domain datasets + reports + lineage
+```bash
+datavoyager build "Create a QA dataset about Python generators for beginners. Write answers in English and include short code examples. Prefer official Python documentation." \
+  --output data/python-qa.jsonl
 ```
 
-## What is implemented
+The output uses the Alpaca format. An illustrative row:
 
-- **Natural-language entry point:** `datavoyager build` persists the complete request
-  and passes it to the existing acquisition worker. Optional domain and focus hints
-  guide discovery; this is not yet a separate, schema-enforced dataset-spec compiler.
-- **Two discovery routes:** search hosted datasets (including Hugging Face and optional
-  Kaggle), and run domain-focused web campaigns.
-- **Bounded web exploration:** an LLM searches, inspects pages, extracts links, and
-  submits resource URLs; a crawler then collects raw HTML.
-- **Configurable curation:** HTML extraction, filtering, topic classification, and
-  optional QA/code/Text-to-SQL generation through operator pipelines.
-- **Persistent execution:** campaign queues, retries, progress, streaming processing,
-  source metadata, and lineage.
-- **Badcase-driven acquisition:** use a failure report as the request, retaining the
-  original report for the worker to inspect.
+```json
+{
+  "instruction": "What happens when you call a Python generator function?",
+  "input": "",
+  "output": "It returns a generator iterator; the function body does not run yet. For example:\n\ndef numbers():\n    yield 1\n\ng = numbers()\nprint(next(g))  # Runs until yield and prints 1"
+}
+```
 
-The webpage pipeline uses **L1 = raw HTML**, **L2 = processed text**, and
-**L3 = initial SFT samples**. A completed acquisition may contain several datasets;
-the advanced DataMixer recipe/export commands control the final training export.
+The same command can collect material for product-support questions, course exercises, or a specialist knowledge assistant. Change the topic, audience, and answer style in your request.
 
-## Quick start: no credentials needed
+## Bring your API
 
-Use Python 3.10+ from a source checkout:
+Requires Python 3.10+ and a model endpoint that supports Chat Completions with JSON output.
 
 ```bash
 git clone https://github.com/haolpku/DataVoyager.git
 cd DataVoyager
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install -e '.[dev]'
+pip install -e .
 
-datavoyager build "Build a Python type-error repair dataset for beginners" \
-  --domain code --focus "type error repair" --target-datasets 2 --dry-run
-
-python examples/offline_demo.py --warehouse runs/offline-demo
-python -m pytest -q
+export DATAVOYAGER_BASE_URL="https://your-provider.example/v1"
+export DATAVOYAGER_MODEL="your-model-name"
+export DATAVOYAGER_API_KEY="your-api-key"
 ```
 
-The dry run prints the request without network calls or file writes. The offline demo
-uses two authored HTML fixtures and runs real extraction, L1/L2 storage, and lineage.
-It does **not** simulate web acquisition or claim to generate validated SFT data.
+Run the request above. The default collects up to 20 pages; use `--max-pages` to change the crawl budget. No separate browser, Node.js runtime, or DataFlow installation is needed for this workflow. Responses API endpoints are also supported via `DATAVOYAGER_API_FORMAT=responses`.
 
-The Python distribution/import name remains `dataflowwebagent` for compatibility;
-the new user-facing command is `datavoyager`. Existing commands continue to work.
+## Watch it work
 
-## Run acquisition with models and network access
+```text
+Request → Find sources → Extract & filter → Generate QA → Export JSONL
+```
 
-The acquisition worker uses the bundled **Codex SDK runner** and can execute shell
-commands. Use a dedicated execution environment with scoped credentials. The current
-worker requests `danger-full-access`; a run directory is not a security sandbox.
+The terminal updates every two seconds with the current work, collected pages, accepted sources, QA candidates, model API calls, and reported input/output tokens. Collection and generation can overlap.
 
-Install the optional components you need:
+Example progress display (illustrative numbers):
+
+```text
+[42s] generating QA | pages 8 | accepted sources 5 | QA 3 | API calls 14 (0 failed, 1 active) | tokens 18200 in / 2100 out (partial; some usage unavailable or pending)
+```
+
+Check the latest snapshot from another terminal:
 
 ```bash
-python -m pip install -e '.[search,browser,dataflow]'
-playwright install chromium
-
-# Node.js and Corepack are required for the acquisition worker.
-# Use a current Node.js LTS runtime; install Corepack if your distribution omits it.
-cd codex-runner
-corepack yarn install --immutable
-cd ..
-
-export DATAFLOWWEBAGENT_MODEL="your-model-name"
-export DATAFLOWWEBAGENT_BASE_URL="https://your-provider.example/v1"
-export DATAFLOWWEBAGENT_API_KEY="your-key"
-# Optional, for Tavily-backed search:
-export TAVILY_API_KEY="your-tavily-key"
-
-datavoyager build "Collect Python type-error repair examples with explanations" \
-  --domain code --focus "type error repair" \
-  --target-datasets 2 \
-  --warehouse ./runs/warehouse --run ./runs/python-repair
+datavoyager status --run data/python-qa.jsonl.run
 ```
 
-`--target-datasets` counts source datasets, **not rows**. A run directory belongs to
-one request; use a new directory for another build. The provider must support the
-Codex runner's Responses API; hosted-dataset helpers also use chat-model integrations.
-Arbitrary OpenAI-compatible endpoints are not guaranteed to support both.
+## Take the dataset with you
 
-Inspect a run:
-
-```bash
-datavoyager dm --root ./runs/warehouse dataset-acquisition-agent status \
-  --run ./runs/python-repair --json
-```
-
-Run from a badcase report:
-
-```bash
-datavoyager badcase --badcase configs/badcase.example.yaml \
-  --warehouse ./runs/warehouse --run ./runs/badcase-repair --dry-run
-```
-
-Direct web campaign, bypassing the outer acquisition worker:
-
-```bash
-datavoyager dm --root ./runs/warehouse init --json
-datavoyager dm --root ./runs/warehouse webagent campaign start domain_data_acquisition \
-  --query "authoritative Python program repair resources" \
-  --auto-process --pipeline examples/datamixer_l1_l3_pipeline/pipeline.yaml
-```
-
-The example pipeline references a MinerU service with a legacy extraction fallback.
-It also needs `open-dataflow` and model access. See [runtime setup](docs/runtime.md)
-before launching a full campaign; its default settings are larger than a smoke test.
-
-## Repository map
-
-| Path | Purpose |
+| File | Contents |
 |---|---|
-| `src/dataflowwebagent/voyager.py` | Natural-language CLI |
-| `src/dataflowwebagent/badcase_pipeline.py` | Report adapter |
-| `src/dataflowwebagent/skills/ObtainerCLI/` | Acquisition worker, dataset search, download, export |
-| `src/dataflowwebagent/agents/Obtainer/datamixer/` | Storage, operators, pipelines, model registry |
-| `…/datamixer/webagents/` | WebAgent discovery, crawling, campaigns |
-| `codex-runner/` | Node.js bridge to the Codex SDK |
-| `examples/offline_demo.py` | Network-free L1 → L2 walkthrough |
-| `examples/datamixer_l1_l3_pipeline/` | Generic, code, and Text-to-SQL pipeline examples |
-| `examples/aime26_real_run/` | Imported recorded trial; historical evidence, not a current benchmark |
-| `tests/` | Offline regression coverage |
+| `data/python-qa.jsonl` | QA pairs with `instruction`, `input`, and `output` fields |
+| `data/python-qa.jsonl.sources.jsonl` | Source URL and metadata for each exported row |
+| `data/python-qa.jsonl.run/report.json` | Final row count, elapsed time, and model API usage |
 
-## Scope and next steps
+The pipeline filters source text, checks QA structure, and removes identical QA pairs. Generated answers still need review before training. Token counts come from provider responses; missing usage is flagged, and monetary cost is not inferred. See the [usage and quality notes](docs/quickstart.md#what-the-numbers-mean).
 
-Quality is a set of inspectable checks, not a property guaranteed by the project name.
-The next milestones are a structured Dataset Spec, stronger domain validators,
-global cost budgets, and reproducible end-to-end evaluations. See the [roadmap](docs/roadmap.md).
+---
 
-This project is separate from the DataVoyager research prototype introduced in
-[Data-driven Discovery with Large Generative Models](https://arxiv.org/abs/2402.13610),
-which studies hypothesis generation and analysis over existing datasets.
+[Advanced acquisition & DataFlow pipelines](docs/runtime.md) · [Roadmap](docs/roadmap.md) · [Attribution & licensing](THIRD_PARTY_NOTICES.md)
 
-## Attribution and licensing status
-
-This repository imports the supplied DataflowWebAgent codebase and keeps its runtime
-module names. DataFlow operators are provided by [OpenDCAI/DataFlow](https://github.com/OpenDCAI/DataFlow).
-The web kernel notes inspiration from [browser-use](https://github.com/browser-use/browser-use).
-Bundled assets and source-page fixtures retain their existing notices and provenance.
-
-The imported archive did not include a project-level license. A project-wide license
-has not been assigned in this initial import; resolve it with the code owners before
-an open-source release. See [third-party notices](THIRD_PARTY_NOTICES.md).
+Developer preview. A project-level license has not yet been assigned.

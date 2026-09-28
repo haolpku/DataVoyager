@@ -1,9 +1,15 @@
-# Runtime setup and current limits
+# Advanced runtime setup and current limits
+
+For the homepage's `build --output` workflow, follow the [QA quickstart](quickstart.md).
+That path uses Python, HTTP extraction, and built-in processing operators. It does
+not invoke the outer Codex worker or require the DataFlow extra. The sections below
+cover the broader acquisition engine and optional integrations.
 
 ## Installation profiles
 
 | Profile | Required components |
 |---|---|
+| Prompt → QA (`build --output`) | Python 3.10+, model API with JSON output, network |
 | CLI dry-run / offline demo | Python 3.10+, base Python dependencies |
 | Offline tests / package build | `pip install -e '.[dev]'` |
 | Hosted-dataset search | `.[search]`, configured model, network |
@@ -70,3 +76,47 @@ file counts and selected fields, not a new online run or independent quality aud
 - **Existing request:** choose a new `--run`, or inspect/resume the existing acquisition via the advanced CLI.
 - **No pages fetched:** inspect `webcrawler_dm_runs/*/failures.jsonl`; failed tasks are retryable.
 - **No L2/L3 rows:** inspect the pipeline stage reports and topic rejection reasons.
+
+## Advanced acquisition commands
+
+Without `--output`, `build` uses the outer acquisition worker to discover hosted
+datasets and web resources. This route needs the Node runner and optional integrations
+above; it does not automatically produce a single QA training file.
+
+```bash
+pip install -e '.[search,browser,dataflow]'
+playwright install chromium
+cd codex-runner
+corepack yarn install --immutable
+cd ..
+
+export DATAFLOWWEBAGENT_MODEL="your-model-name"
+export DATAFLOWWEBAGENT_BASE_URL="https://your-provider.example/v1"
+export DATAFLOWWEBAGENT_API_KEY="your-api-key"
+
+datavoyager build "Collect Python type-error repair examples with explanations" \
+  --domain code --focus "type error repair" --target-datasets 2 \
+  --warehouse runs/warehouse --run runs/python-repair
+
+datavoyager dm --root runs/warehouse dataset-acquisition-agent status \
+  --run runs/python-repair --json
+
+datavoyager badcase --badcase configs/badcase.example.yaml \
+  --warehouse runs/warehouse --run runs/badcase-repair --dry-run
+```
+
+`--target-datasets` counts source datasets, not training rows. This runner uses the
+Responses API; hosted-dataset helpers also use chat-model integrations.
+
+Launch a configurable web pipeline directly:
+
+```bash
+datavoyager dm --root runs/warehouse init --json
+datavoyager dm --root runs/warehouse webagent campaign start domain_data_acquisition \
+  --query "authoritative Python program repair resources" \
+  --auto-process --pipeline examples/datamixer_l1_l3_pipeline/pipeline.yaml
+```
+
+See `examples/datamixer_l1_l3_pipeline/` for DataFlow, code, and Text-to-SQL recipes.
+For a network-free extraction walkthrough, run
+`python examples/offline_demo.py --warehouse runs/offline-demo`.

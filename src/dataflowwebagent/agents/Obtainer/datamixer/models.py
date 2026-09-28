@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, replace
 from pathlib import Path
 
 # response_format selects the request/response wire shape the LLM client uses.
@@ -42,6 +42,7 @@ class ModelSpec:
     max_concurrency: int = DEFAULTS["max_concurrency"]
     top_p: float = DEFAULTS["top_p"]
     extra: dict = field(default_factory=dict)
+    telemetry_key: str = ""
 
     def __post_init__(self):
         if self.response_format not in RESPONSE_FORMATS:
@@ -178,6 +179,9 @@ class ModelPool:
         return "codex" if _standalone_model_spec("codex") is not None else ""
 
     def get(self, name: str) -> ModelSpec:
+        return replace(self._get(name), telemetry_key=str(self.path.parent.resolve()))
+
+    def _get(self, name: str) -> ModelSpec:
         if name not in self._models:
             resolved = resolve_from_system_pool(name)
             if resolved is not None:

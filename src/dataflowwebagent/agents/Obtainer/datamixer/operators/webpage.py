@@ -471,7 +471,8 @@ class PTToSFTQA(LLMOperator):
     def __init__(self, model=None, chunk_size=MAX_CHUNK,
                  max_concurrency=DEFAULT_CONCURRENCY,
                  max_input_chars: int = 12000,
-                 max_tokens: int | None = None, **kw):
+                 max_tokens: int | None = None, instruction: str = "", **kw):
+        self.instruction = instruction
         kw.setdefault("strict_output", True)
         super().__init__(
             model=model,
@@ -508,6 +509,10 @@ class PTToSFTQA(LLMOperator):
             "and answers should usually be 2-6 sentences.\n\nItems:\n"
             + _json(items)
         )
+        if self.instruction:
+            user += ("\n\nDataset requirements (topic, audience, language and question style):\n"
+                     + self.instruction
+                     + "\nFollow these requirements while keeping every answer supported by its source item.")
         return [
             {"role": "system", "content": system},
             {"role": "user", "content": user},

@@ -25,21 +25,35 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] == "badcase":
         return badcase_pipeline.main(argv[1:])
     parser = argparse.ArgumentParser(
-        description="DataVoyager: natural-language requirements to domain datasets",
+        description="DataVoyager: turn a prompt into a QA training dataset",
         epilog="Advanced commands: datavoyager dm --help; datavoyager badcase --help",
     )
     parser.add_argument("--version", action="version", version=__version__)
     sub = parser.add_subparsers(dest="command", required=True)
+    status = sub.add_parser("status", help="show a QA run's latest progress and API usage")
+    status.add_argument("--run", type=Path, required=True)
+    status.add_argument("--json", action="store_true")
     build = sub.add_parser("build", help="start acquisition from a natural-language request")
     build.add_argument("request", help="describe the desired dataset and quality requirements")
     build.add_argument("--domain", default="")
     build.add_argument("--keywords", default="")
     build.add_argument("--focus", action="append", default=[])
     build.add_argument("--target-datasets", type=_positive, default=1)
-    build.add_argument("--warehouse", type=Path, default=Path("runs/warehouse"))
-    build.add_argument("--run", type=Path, default=Path("runs/acquisition"))
+    build.add_argument("--output", type=Path, help="build and export a web-sourced QA dataset as Alpaca JSONL")
+    build.add_argument("--max-pages", type=_positive, default=20, help="page budget for --output mode (default: 20)")
+    build.add_argument("--warehouse", type=Path)
+    build.add_argument("--run", type=Path)
     build.add_argument("--dry-run", action="store_true", help="print the request without network calls or writes")
     args = parser.parse_args(argv)
+    if args.command == "status":
+        from .qa_progress import format_progress
+        try:
+            snapshot = json.loads((args.run.expanduser() / "progress.json").read_text())
+        except (OSError, ValueError) as exc:
+            print(f"Cannot read run progress: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(snapshot, ensure_ascii=False, indent=2) if args.json else format_progress(snapshot))
+        return 0
     if not args.request.strip():
         parser.error("request must not be empty")
     spec = {
@@ -49,13 +63,28 @@ def main(argv: list[str] | None = None) -> int:
         "focus_keywords": args.focus,
         "target_datasets": args.target_datasets,
     }
-    warehouse = args.warehouse.expanduser().resolve()
-    run = args.run.expanduser().resolve()
+    output = args.output.expanduser().resolve() if args.output else None
+    default_run = output.with_name(output.name + ".run") if output else Path("runs/acquisition")
+    run = (args.run or default_run).expanduser().resolve()
+    warehouse = (args.warehouse or (run / "warehouse" if output else Path("runs/warehouse"))).expanduser().resolve()
     request_path = run / "request.json"
     if args.dry_run:
-        print(json.dumps({"status": "dry_run", "request": spec,
-                          "warehouse": str(warehouse), "run": str(run)},
+        preview = {"status": "dry_run", "request": spec,
+                   "warehouse": str(warehouse), "run": str(run)}
+        if output:
+            preview.update({"mode": "web_qa", "output": str(output), "format": "alpaca", "max_pages": args.max_pages})
+        print(json.dumps(preview,
                          ensure_ascii=False, indent=2))
+        return 0
+    if output:
+        from .qa_pipeline import run_qa
+        try:
+            result = run_qa(args.request.strip(), warehouse=warehouse, run=run, output=output,
+                            max_pages=args.max_pages, focus=[x for x in [args.domain, *args.focus] if x])
+        except (ValueError, RuntimeError, OSError, KeyError) as exc:
+            print(json.dumps({"status": "failed", "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+            return 1
+        print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     run.mkdir(parents=True, exist_ok=True)
     # Never overwrite the request belonging to an existing acquisition run.

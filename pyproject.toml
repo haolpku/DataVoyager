@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dataflowwebagent"
 version = "0.1.0a1"
-description = "DataVoyager: from natural-language requirements to traceable domain datasets"
+description = "DataVoyager: turn natural-language requests into QA training datasets"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
