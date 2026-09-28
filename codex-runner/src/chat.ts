@@ -6,11 +6,12 @@ import { Codex } from "@openai/codex-sdk";
 type ChatInput = {api_key: string; base_url: string; model: string; workspace: string; thread_id?: string; prompt: string};
 const schema = {
   type: "object", additionalProperties: false,
-  required: ["reply", "action", "request", "max_pages", "base_run_id"],
+  required: ["reply", "action", "request", "max_pages", "base_run_id", "target_rows"],
   properties: {
     reply: { type: "string" },
-    action: { type: "string", enum: ["reply", "build", "revise"] },
-    request: { type: "string" }, max_pages: { type: "integer", minimum: 1, maximum: 100 },
+    action: { type: "string", enum: ["reply", "build", "revise", "extend"] },
+    request: { type: "string" }, max_pages: { type: "integer", minimum: 1, maximum: 1000 },
+    target_rows: { type: "integer", minimum: 0, maximum: 10000 },
     base_run_id: { type: "string" },
   },
 };

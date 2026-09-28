@@ -20,9 +20,11 @@ _LABELS = {"webpage_to_pt": "extracting text", "domain_classify": "checking rele
 def format_progress(snapshot: dict) -> str:
     usage = snapshot["usage"]
     coverage = "" if usage["usage_complete"] else " (partial; some usage unavailable or pending)"
+    quantity = (f"unique QA {snapshot.get('generated_rows', 0)}/{snapshot['target_rows']} | "
+                if snapshot.get("target_rows") else "")
     return (f"[{snapshot['elapsed_seconds']:.0f}s] {snapshot['stage']} | "
             f"pages {snapshot['pages_collected']} | accepted sources {snapshot['sources_accepted']} | "
-            f"QA {snapshot['qa_candidates']} | API calls {usage['calls']} "
+            f"QA candidates {snapshot['qa_candidates']} | {quantity}API calls {usage['calls']} "
             f"({usage['failed_calls']} failed, {usage['in_flight']} active) | "
             f"tokens {usage['input_tokens']} in / {usage['output_tokens']} out{coverage}")
 
@@ -36,6 +38,7 @@ class QAProgress:
         self.thread = threading.Thread(target=self._loop, name="qa-progress", daemon=True)
         self.status = "running"
         self.stage = "searching / collecting sources"
+        self.quantity = {}
 
     def start(self):
         self.write()
@@ -82,7 +85,7 @@ class QAProgress:
                     "pages_collected": counts[self.config.dataset],
                     "sources_accepted": counts[self.config.l2_dataset],
                     "qa_candidates": counts[self.config.l3_dataset],
-                    "stages": pipeline.get("stages", []), "usage": self.meter.snapshot()}
+                    "stages": pipeline.get("stages", []), "usage": self.meter.snapshot(), **dict(self.quantity)}
         if warning:
             snapshot["progress_warning"] = warning
         temporary = self.run / "progress.json.tmp"

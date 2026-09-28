@@ -44,6 +44,8 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--target-datasets", type=_positive, default=1)
     build.add_argument("--output", type=Path, help="build and export a web-sourced QA dataset as Alpaca JSONL")
     build.add_argument("--max-pages", type=_positive, default=20, help="page budget for --output mode (default: 20)")
+    build.add_argument("--target-rows", type=_positive, help="desired unique QA count; inferred from explicit request counts when omitted")
+    build.add_argument("--max-rounds", type=_positive, default=5, help="bounded refill rounds within --max-pages (default: 5)")
     build.add_argument("--warehouse", type=Path)
     build.add_argument("--run", type=Path)
     build.add_argument("--dry-run", action="store_true", help="print the request without network calls or writes")
@@ -83,7 +85,9 @@ def main(argv: list[str] | None = None) -> int:
         preview = {"status": "dry_run", "request": spec,
                    "warehouse": str(warehouse), "run": str(run)}
         if output:
-            preview.update({"mode": "web_qa", "output": str(output), "format": "alpaca", "max_pages": args.max_pages})
+            from .qa_quantity import resolve_target
+            preview.update({"mode": "web_qa", "output": str(output), "format": "alpaca", "max_pages": args.max_pages,
+                            "target_rows": resolve_target(args.request, args.target_rows), "max_rounds": args.max_rounds})
         print(json.dumps(preview,
                          ensure_ascii=False, indent=2))
         return 0
@@ -91,12 +95,13 @@ def main(argv: list[str] | None = None) -> int:
         from .qa_pipeline import run_qa
         try:
             result = run_qa(args.request.strip(), warehouse=warehouse, run=run, output=output,
-                            max_pages=args.max_pages, focus=[x for x in [args.domain, *args.focus] if x])
+                            max_pages=args.max_pages, focus=[x for x in [args.domain, *args.focus] if x],
+                            target_rows=args.target_rows, max_rounds=args.max_rounds)
         except (ValueError, RuntimeError, OSError, KeyError) as exc:
             print(json.dumps({"status": "failed", "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
             return 1
         print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0
+        return 2 if result["status"] == "needs_confirmation" else 0
     run.mkdir(parents=True, exist_ok=True)
     # Never overwrite the request belonging to an existing acquisition run.
     try:

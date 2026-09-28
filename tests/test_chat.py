@@ -242,3 +242,83 @@ def test_duplicate_turns_rejected_and_interrupted_state_is_recovered(tmp_path):
     snapshot = restored.snapshot(sid)
     assert not snapshot["busy"]
     assert snapshot["agent_turns"][0]["status"] == "interrupted"
+
+
+def test_preflight_confirmation_is_persistent_and_cannot_be_replayed(tmp_path, monkeypatch):
+    def agent(context, config, directory, emit):
+        # Deliberately omit the count: supervisor still extracts it from the user.
+        return {'action': 'build', 'request': '中文金融问答', 'max_pages': 5, 'reply': '开始了'}
+    app = Workspace(tmp_path, agent=agent)
+    configure(app)
+    sid = app.create()['id']
+    launched = []
+    monkeypatch.setattr(Workspace, '_work', lambda self, *args: launched.append(args))
+    app.send(sid, '生成100条金融问答')
+    wait_until(lambda: not app.snapshot(sid)['busy'])
+    assert not launched and not app.snapshot(sid)['runs']
+    plan = app.snapshot(sid)['pending_plan']
+    assert plan['target_rows'] == 100 and plan['capacity_upper_bound'] == 5
+    assert not any(m['content'] == '开始了' for m in app.snapshot(sid)['messages'])
+    app.close()
+    restored = Workspace(tmp_path, agent=agent)
+    configure(restored)
+    with server_for(restored) as request:
+        assert restored.snapshot(sid)['pending_plan']['id'] == plan['id']
+        confirmation = {'plan_id': plan['id'], 'action': 'start', 'target_rows': 3, 'max_pages': 5}
+        request(f'/api/sessions/{sid}/confirm', confirmation)
+        wait_until(lambda: bool(launched))
+        run = restored.snapshot(sid)['runs'][0]
+        assert run['target_rows'] == 3
+        assert '本次目标题数改为 3 条' in run['request']
+        with pytest.raises(HTTPError):
+            request(f'/api/sessions/{sid}/confirm', confirmation)
+        assert len(launched) == 1
+
+
+def seed_shortfall(app, sid):
+    rid, root = seed_version(app, sid)
+    app.chats[sid]['runs'][0].update(status='needs_confirmation', target_rows=100)
+    write_json(root / 'run/report.json', {'status': 'needs_confirmation', 'rows': 1, 'target_rows': 100,
+                                         'shortfall': 99, 'target_met': False, 'stop_reason': 'page_budget_exhausted'})
+    app._save(app.chats[sid])
+    return rid, root
+
+
+def test_accepting_shortfall_does_not_claim_original_target_or_spend_api(tmp_path, monkeypatch):
+    app = Workspace(tmp_path)
+    sid = app.create()['id']
+    rid, root = seed_shortfall(app, sid)
+    monkeypatch.setattr(app, '_work', lambda *a: pytest.fail('Acceptance must not start a worker'))
+    original = (root / 'qa.jsonl').read_bytes()
+    with server_for(app) as request:
+        request(f'/api/sessions/{sid}/runs/{rid}/resolve', {'action': 'accept'})
+        run = app.snapshot(sid)['runs'][0]
+        assert run['status'] == 'accepted_partial' and run['downloadable']
+        assert run['report']['target_met'] is False
+        assert run['report']['target_rows'] == 100 and run['report']['accepted_rows'] == 1
+        assert request(f'/api/sessions/{sid}/runs/{rid}/download/qa') == original
+        with pytest.raises(HTTPError):
+            request(f'/api/sessions/{sid}/runs/{rid}/resolve', {'action': 'accept'})
+    restored = Workspace(tmp_path)
+    assert restored.snapshot(sid)['runs'][0]['status'] == 'accepted_partial'
+
+
+def test_extend_shortfall_is_new_version_with_explicit_additional_budget(tmp_path, monkeypatch):
+    app = Workspace(tmp_path)
+    configure(app)
+    sid = app.create()['id']
+    rid, root = seed_shortfall(app, sid)
+    original = (root / 'qa.jsonl').read_bytes()
+    launched = []
+    monkeypatch.setattr(app, '_work', lambda *a: launched.append(a))
+    app.resolve_shortfall(sid, rid, {'action': 'extend', 'max_pages': 30})
+    wait_until(lambda: bool(launched))
+    runs = app.snapshot(sid)['runs']
+    assert len(runs) == 2 and runs[0]['downloadable']
+    assert runs[1]['target_rows'] == 100 and runs[1]['max_pages'] == 30
+    job = json.loads((root.parent / runs[1]['id'] / 'job.json').read_text())
+    assert job['base_warehouse'] == str(root / 'warehouse')
+    assert (root / 'qa.jsonl').read_bytes() == original
+    with pytest.raises(ValueError, match='待确认'):
+        app.resolve_shortfall(sid, rid, {'action': 'extend', 'max_pages': 30})
+    app.close()

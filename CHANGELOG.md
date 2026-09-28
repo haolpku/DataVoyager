@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Track requested QA counts independently of page budgets; refill within bounded rounds, deduplicate questions, and report quantity shortfalls without claiming completion.
+- Add persistent preflight and shortfall confirmation cards, acceptance of partial exports, and additional collection into a new version retaining previous QA.
 - Add reproducible finance/medical QA evaluation, fixed-source language/style controls, source-quote audits, and reported API accounting; publish the 100/1000-target baseline results and limitations.
 - Allow model configurations to omit unsupported sampling parameters for reasoning-model audits.
 - Separate the QA crawl budget from discovery candidates; a one-page run can inspect up to 50 links per page.

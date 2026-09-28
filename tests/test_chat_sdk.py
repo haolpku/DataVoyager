@@ -12,7 +12,7 @@ from dataflowwebagent.chat.agent import codex_turn
 @pytest.mark.skipif(os.environ.get("DATAVOYAGER_TEST_SDK") != "1", reason="build codex-runner and set DATAVOYAGER_TEST_SDK=1")
 def test_real_sdk_stream_resume_and_provider_usage(tmp_path):
     requests = []
-    decision = {"reply": "我会按你的需求规划问答。", "action": "reply", "request": "", "max_pages": 5, "base_run_id": ""}
+    decision = {"reply": "我会按你的需求规划问答。", "action": "reply", "request": "", "max_pages": 5, "base_run_id": "", "target_rows": 0}
     class API(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass

@@ -95,6 +95,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(201, app.create())
             if len(parts) == 4 and parts[:2] == ["api", "sessions"] and parts[3] == "messages":
                 return self._send(202, app.send(parts[2], data.get("message")))
+            if len(parts) == 4 and parts[:2] == ["api", "sessions"] and parts[3] == "confirm":
+                return self._send(200, app.confirm_plan(parts[2], data))
+            if len(parts) == 6 and parts[:2] == ["api", "sessions"] and parts[3] == "runs" and parts[5] == "resolve":
+                return self._send(200, app.resolve_shortfall(parts[2], parts[4], data))
             if len(parts) == 6 and parts[:2] == ["api", "sessions"] and parts[3] == "runs" and parts[5] == "cancel":
                 return self._send(200, app.cancel(parts[2], parts[4]))
             self._send(404, {"error": "Not found"})

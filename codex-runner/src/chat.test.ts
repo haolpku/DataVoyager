@@ -4,7 +4,7 @@ import type { Thread, ThreadOptions, TurnOptions, ThreadEvent } from "@openai/co
 import { runChat } from "./chat.js";
 
 const input = {api_key:"test", base_url:"https://model.invalid/v1", model:"test", workspace:"/tmp",prompt:"Create beginner QA"};
-const decision={reply:"开始收集资料",action:"build",request:"Python beginner QA",max_pages:5,base_run_id:""};
+const decision={reply:"开始收集资料",action:"build",request:"Python beginner QA",max_pages:5,base_run_id:"",target_rows:5};
 function fakeThread(events: ThreadEvent[]) {
   return {runStreamed:async (prompt: string, options: TurnOptions) => {
     assert.equal(prompt,input.prompt);assert.ok(options.outputSchema);assert.ok(options.signal);

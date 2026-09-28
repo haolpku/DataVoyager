@@ -44,9 +44,12 @@ You: Focus on common misconceptions and include small code examples.
 You: What has finished, and how much API usage has been reported?
 ```
 
-The agent chooses among a reply, new collection, and revision using existing sources.
+The agent chooses among a reply, new collection, revision, and explicitly requested additional collection.
 Its complete accumulated request is saved with each version. Initial sample runs
 normally use a five-page budget. A page budget is not a QA quota or a monetary cap.
+Explicit requested QA counts are stored separately as `target_rows`. The interface
+shows generated unique questions against this target. It checks structure and duplicate
+questions; the counter does not certify factual quality.
 The collection budget does not restrict the number of navigation choices: discovery
 can inspect up to 50 links per page, even for a one-page sample. Link ranking helps
 navigation; it does not replace the model's source-quality judgment.
@@ -55,14 +58,59 @@ navigation; it does not replace the model's source-quality judgment.
   not automatically append to or merge with old versions.
 - **Revision:** copies accepted text from a prior version and regenerates QA with
   updated requirements. No new crawl is needed; previous outputs are unchanged.
+- **Additional collection:** after a shortfall, explicitly add a page budget. A new
+  version copies the previous QA and accepted sources, then searches under the same
+  requirements to fill the remaining count. Earlier questions are retained first.
 - **During a run:** ask questions or discuss changes. There is at most one active
   dataset job per conversation. Changes apply to a later version; they do not rewrite
   an in-flight generation. To change direction immediately, stop the job first.
 
 The first five available QA candidates appear in the preview, with source links.
 Candidates can appear before final export. Completed versions provide QA and source
-manifest downloads. The final export performs structure validation and exact-pair
-deduplication; it does not independently establish factual correctness.
+manifest downloads. The final export performs structure validation and normalized
+question deduplication (case, whitespace and punctuation normalized); it does not
+independently establish factual correctness or perform semantic deduplication.
+
+## Requested counts and confirmation
+
+For example: “生成 100 条中文金融问答，最多采集 20 页。” The current operator
+generates at most one QA per accepted document, so the backend pauses before collection
+and explains that this budget supports at most 20 rows, with actual yield possibly lower.
+Edit the target or page budget in the confirmation card, cancel, or explicitly try
+the existing budget. This upper bound is not a quality or yield prediction. The chat
+controller turn may consume API usage; the paused dataset build has not started.
+
+When the target fits the budget, the build starts directly. Count-aware builds search
+in up to five rounds within the total page budget. They stop when the requested number
+of distinct questions is reached, the allocated budget or round limit is reached, or
+two consecutive rounds produce no new questions. Unused allocation from a round is
+not reclaimed. Discovery/search navigation requests are separate from this collection
+budget; it is not an API-spending limit. Source and topic restrictions stay in place.
+
+A shortfall has status `needs_confirmation`, not `completed`. The worker exits and
+the interface offers three paths:
+
+- Accept the current count without further generation. The original target and gap
+  remain in the report; status becomes `accepted_partial` and `target_met` stays false.
+- Add an explicit page budget and continue in a new version, retaining existing QA.
+- Discuss a different topic or source scope and start a new independent build.
+
+Partial exports can be previewed and downloaded with their shortfall status. Zero-row
+runs cannot be accepted or downloaded. Confirmation is checked by the server, survives
+restarts, and cannot be replayed to launch the same job twice. Changing requirements
+invalidates an unconfirmed plan. Running tasks are still interrupted on server restart;
+they do not resume automatically. Provider or pipeline failures remain failures, not
+quantity confirmations.
+
+The CLI accepts `--target-rows` and `--max-rounds`, and recognizes simple explicit
+Chinese/English counts in the request. It attempts the supplied budget without an
+interactive prompt, writes any available partial export, and exits with code **2** for
+`needs_confirmation` (0 for completion, 1 for failure):
+
+```bash
+datavoyager build '中文金融基础知识问答，优先参考公开投资者教育资料' \
+  --target-rows 100 --max-pages 150 --max-rounds 5 --output data/finance-qa.jsonl
+```
 
 ## Progress and usage
 
