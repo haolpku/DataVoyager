@@ -48,8 +48,7 @@ The agent chooses among a reply, new collection, revision, and explicitly reques
 Its complete accumulated request is saved with each version. Initial sample runs
 normally use a five-page budget. A page budget is not a QA quota or a monetary cap.
 Explicit requested QA counts are stored separately as `target_rows`. The interface
-shows generated unique questions against this target. It checks structure and duplicate
-questions; the counter does not certify factual quality.
+shows generated unique questions against this target. New runs count only source-reviewed and deduplicated QA; model review is not expert certification.
 The collection budget does not restrict the number of navigation choices: discovery
 can inspect up to 50 links per page, even for a one-page sample. Link ranking helps
 navigation; it does not replace the model's source-quality judgment.
@@ -65,17 +64,15 @@ navigation; it does not replace the model's source-quality judgment.
   dataset job per conversation. Changes apply to a later version; they do not rewrite
   an in-flight generation. To change direction immediately, stop the job first.
 
-The first five available QA candidates appear in the preview, with source links.
+Up to five source-reviewed QA candidates appear in the preview, with source links.
 Candidates can appear before final export. Completed versions provide QA and source
-manifest downloads. The final export performs structure validation and normalized
-question deduplication (case, whitespace and punctuation normalized); it does not
-independently establish factual correctness or perform semantic deduplication.
+manifest downloads. Final exports require source-review approval and question deduplication. Intermediate downloads remain available even if no QA passes review. See [stage datasets](evidence-pipeline.md) for review limits and source-only runs.
 
 ## Requested counts and confirmation
 
-For example: “生成 100 条中文金融问答，最多采集 20 页。” The current operator
-generates at most one QA per accepted document, so the backend pauses before collection
-and explains that this budget supports at most 20 rows, with actual yield possibly lower.
+For example: “生成 100 条中文金融问答，最多采集 5 页。” The current operator
+generates at most six QA candidates per document, so the backend pauses before collection
+and explains that this budget supports at most 30 rows, with actual yield possibly lower.
 Edit the target or page budget in the confirmation card, cancel, or explicitly try
 the existing budget. This upper bound is not a quality or yield prediction. The chat
 controller turn may consume API usage; the paused dataset build has not started.
@@ -95,8 +92,7 @@ the interface offers three paths:
 - Add an explicit page budget and continue in a new version, retaining existing QA.
 - Discuss a different topic or source scope and start a new independent build.
 
-Partial exports can be previewed and downloaded with their shortfall status. Zero-row
-runs cannot be accepted or downloaded. Confirmation is checked by the server, survives
+Partial exports can be previewed and downloaded with their shortfall status. Zero-QA runs cannot be accepted as partial QA, but their saved intermediate datasets can still be downloaded. Confirmation is checked by the server, survives
 restarts, and cannot be replayed to launch the same job twice. Changing requirements
 invalidates an unconfirmed plan. Running tasks are still interrupted on server restart;
 they do not resume automatically. Provider or pipeline failures remain failures, not

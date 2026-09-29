@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from qa_fixtures import approved_content, evidence_response
 
 from dataflowwebagent import qa_pipeline, voyager
 from dataflowwebagent.agents.Obtainer.datamixer import llm
@@ -33,9 +34,7 @@ def test_export_validates_pairs_deduplicates_and_separates_sources(tmp_path):
     try:
         dataset = store.catalog.add_dataset(name="qa", source="test")
         def record(question, answer, title):
-            return {"content": {"messages": [{"role": "user", "content": question},
-                                             {"role": "assistant", "content": answer}],
-                                "provenance": {"title": title, "source_url": "https://example.org/source"}}}
+            return {"content": approved_content(question, answer, title)}
         store.ingest_records(dataset, [record("Question?", "Answer.", "first"),
                                        record("Question?", "Answer.", "duplicate"),
                                        record("same", "same", "invalid"),
@@ -91,14 +90,8 @@ def test_real_pipeline_to_training_file_with_mocked_web_and_model(tmp_path, monk
     calls = []
     def generate(messages):
         calls.append(messages)
-        if "Allowed labels:" in messages[-1]["content"]:
-            return json.dumps({"results": [{"index": 0, "labels": ["code"], "confidence": 0.99,
-                "semantic_signals": [
-                    {"type": "generator_behavior", "evidence": "A generator function uses yield to produce values one at a time.", "confidence": 0.99},
-                    {"type": "iterator_contract", "evidence": "Calling a generator function returns an iterator.", "confidence": 0.99}]}]})
         assert request in messages[-1]["content"]
-        return json.dumps({"results": [{"index": 0, "question": "What does calling a generator function return?",
-                                         "answer": "It returns an iterator."}]})
+        return json.dumps(evidence_response(messages))
     def post(url, payload, api_key, timeout):
         return {"choices": [{"message": {"content": generate(payload["messages"])}}],
                 "usage": {"prompt_tokens": 100, "completion_tokens": 25}}
@@ -108,10 +101,10 @@ def test_real_pipeline_to_training_file_with_mocked_web_and_model(tmp_path, monk
     assert result["status"] == "completed"
     assert result["rows"] == 1
     assert json.loads(output.read_text())["output"] == "It returns an iterator."
-    assert len(calls) == 2
+    assert len(calls) == 3
     assert (tmp_path / "run" / "report.json").is_file()
-    assert result["usage"]["calls"] == 2
-    assert result["usage"]["total_tokens"] == 250
+    assert result["usage"]["calls"] == 3
+    assert result["usage"]["total_tokens"] == 375
     snapshot = json.loads((tmp_path / "run" / "progress.json").read_text())
     assert snapshot["status"] == "completed"
     assert snapshot["pages_collected"] == snapshot["sources_accepted"] == snapshot["qa_candidates"] == 1

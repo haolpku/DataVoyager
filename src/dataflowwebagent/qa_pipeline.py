@@ -18,23 +18,19 @@ from .agents.Obtainer.datamixer.store import DataStore
 from .agents.Obtainer.datamixer.webagents import CampaignConfig, WebAgentCampaignRunner
 
 
-def pipeline_spec(request: str, model: str) -> dict:
+def pipeline_spec(request: str, model: str, stop_after: str = "qa") -> dict:
     """Use the existing operators without requiring a separate DataFlow install."""
-    return {"pipeline": {"name": "web_to_qa", "source": {}, "operators": [
-        {"name": "webpage_to_pt", "args": {"engine": "legacy", "min_chars": 300}},
-        {"name": "domain_classify", "args": {
-            "model": model, "chunk_size": 1, "max_concurrency": 2,
-            "max_input_chars": 12000, "max_tokens": 2048}},
-        {"name": "topic_quality_filter", "args": {
-            "min_semantic_signals": 2, "min_classifier_confidence": 0.8,
-            "min_signal_confidence": 0.7},
+    spec = {"pipeline": {"name": "web_to_evidence_qa", "source": {}, "operators": [
+        {"name": "evidence_prepare"},
+        {"name": "evidence_select", "args": {"model": model, "instruction": request, "max_tokens": 4096},
          "output": {"dataset": "qa_l2", "quality_level": "L2", "stage": "pretrain"}},
-        {"name": "pt_to_sft_qa", "args": {
-            "model": model, "instruction": request, "chunk_size": 1,
-            "max_concurrency": 2, "max_input_chars": 12000, "max_tokens": 4096}},
-        {"name": "sft_validate", "args": {"mode": "filter"},
+        {"name": "evidence_qa_generate", "args": {"model": model, "instruction": request, "max_tokens": 4096}},
+        {"name": "evidence_qa_review", "args": {"model": model, "instruction": request, "max_tokens": 4096},
          "output": {"dataset": "qa_l3", "quality_level": "L3", "stage": "sft"}},
     ]}}
+    if stop_after == "corpus":
+        spec["pipeline"]["operators"] = spec["pipeline"]["operators"][:2]
+    return spec
 
 
 def qa_records(store: DataStore, dataset: str) -> tuple[list, list, dict]:
@@ -42,40 +38,47 @@ def qa_records(store: DataStore, dataset: str) -> tuple[list, list, dict]:
     dataset_id = store.catalog.resolve_dataset(dataset)
     if not dataset_id:
         return [], [], {"invalid_rows_removed": 0, "duplicate_pairs_removed": 0}
+    from .qa_artifacts import stage_records
+    held = {c['candidate_id'] for c in stage_records(store.root, 'candidates') if c.get('status') != 'source_supported'}
     rows, sources = [], []
-    seen = set()
-    rejected = duplicates = 0
+    seen, grams = set(), []
+    rejected = duplicates = unreviewed = 0
     samples = [s for batch in store.catalog.iter_query(dataset_id=dataset_id, where="quality_level = 'L3'") for s in batch]
-    # Earlier versions' rows stay first when extending and capping the final export.
     for sample in sorted(samples, key=lambda s: (s["created_at"], s["sample_id"])):
         content = store.get_content(sample["cid"])
-        messages = content.get("messages") if isinstance(content, dict) else None
-        if (not isinstance(messages, list) or len(messages) != 2
-                or not all(isinstance(m, dict) for m in messages)
-                or [m.get("role") for m in messages] != ["user", "assistant"]
-                or not all(isinstance(m.get("content"), str) and m["content"].strip() for m in messages)):
-            rejected += 1
+        if not isinstance(content, dict) or not content.get("review_complete"):
+            unreviewed += 1
             continue
-        question, answer = (m["content"].strip() for m in messages)
-        if question == answer:
-            rejected += 1
-            continue
-        key = re.sub(r"\W+", "", question).casefold()
-        if not key:
-            rejected += 1
-            continue
-        if key in seen:
-            duplicates += 1
-            continue
-        seen.add(key)
-        rows.append({"instruction": question, "input": "", "output": answer})
-        tags = sample.get("tags") or {}
-        provenance = content.get("provenance") or {}
-        sources.append({"row": len(rows), "sample_id": sample["sample_id"],
-                        "source_url": provenance.get("source_url") or tags.get("source_uri"),
-                        "title": provenance.get("title"), "tags": tags})
+        for candidate in content.get("qa_candidates", []):
+            if candidate.get("status") != "source_supported" or candidate.get("candidate_id") in held:
+                unreviewed += 1
+                continue
+            question, answer = candidate.get("question"), candidate.get("answer")
+            if not all(isinstance(x, str) and x.strip() for x in (question, answer)) or question == answer:
+                rejected += 1
+                continue
+            question, answer = question.strip(), answer.strip()
+            key = re.sub(r"\W+", "", question).casefold()
+            if not key:
+                rejected += 1
+                continue
+            # Conservative lexical near-duplicate check; preserve different numeric conditions.
+            shingles = {key[i:i + 3] for i in range(len(key) - 2)} if len(key) >= 20 else set()
+            numbers = re.findall(r"\d+(?:\.\d+)?", question)
+            near = any(numbers == n and shingles and g and len(shingles & g) / len(shingles | g) >= .9 for g, n in grams)
+            if key in seen or near:
+                duplicates += 1
+                continue
+            seen.add(key)
+            grams.append((shingles, numbers))
+            rows.append({"instruction": question, "input": "", "output": answer})
+            sources.append({"row": len(rows), "sample_id": sample["sample_id"],
+                            "candidate_id": candidate["candidate_id"], "source_url": candidate.get("source_url"),
+                            "title": candidate.get("title"), "segment": candidate.get("segment"),
+                            "claims": candidate.get("claims"), "review": candidate.get("review"),
+                            "verification": "model_source_review_not_expert_certification"})
     return rows, sources, {"invalid_rows_removed": rejected, "duplicate_pairs_removed": duplicates,
-                           "duplicate_questions_removed": duplicates}
+                           "duplicate_questions_removed": duplicates, "unverified_rows_removed": unreviewed}
 
 
 def export_qa(store: DataStore, dataset: str, output: Path, *, target_rows: int | None = None) -> dict:
@@ -104,7 +107,7 @@ def export_qa(store: DataStore, dataset: str, output: Path, *, target_rows: int 
         raise
     return {"output": str(output), "sources": str(source_path), "rows": len(rows),
             **metrics, "eligible_rows": eligible,
-            "format": "alpaca", "factual_verification": "not_performed"}
+            "format": "alpaca", "factual_verification": "model_source_review"}
 
 
 def resolve_model(warehouse: Path) -> str:
@@ -133,7 +136,11 @@ def resolve_model(warehouse: Path) -> str:
 def run_qa(request: str, *, warehouse: Path, run: Path, output: Path,
            max_pages: int = 20, focus: list[str] | None = None,
            target_rows: int | None = None, max_rounds: int = 5,
-           base_warehouse: Path | None = None) -> dict:
+           base_warehouse: Path | None = None, stop_after: str = "qa") -> dict:
+    if stop_after not in {"raw", "corpus", "qa"}:
+        raise ValueError("stop_after must be raw, corpus or qa")
+    if base_warehouse and stop_after != "qa":
+        raise ValueError("Source-only runs must be new collections")
     if max_pages < 1:
         raise ValueError("max_pages must be positive")
     target_rows = resolve_target(request, target_rows)
@@ -148,16 +155,16 @@ def run_qa(request: str, *, warehouse: Path, run: Path, output: Path,
     run.mkdir(parents=True, exist_ok=True)
     with (run / "request.json").open("x", encoding="utf-8") as handle:
         json.dump({"objective": request, "output": str(output), "max_pages": max_pages,
-                   "target_rows": target_rows, "max_rounds": max_rounds}, handle, ensure_ascii=False, indent=2)
+                   "target_rows": target_rows if stop_after == "qa" else None, "max_rounds": max_rounds, "stop_after": stop_after}, handle, ensure_ascii=False, indent=2)
     store = DataStore.init(warehouse)
     store.close()
     pipeline = run / "pipeline.yaml"
-    pipeline.write_text(yaml.safe_dump(pipeline_spec(request, model), allow_unicode=True, sort_keys=False))
+    pipeline.write_text(yaml.safe_dump(pipeline_spec(request, model, stop_after), allow_unicode=True, sort_keys=False))
     prefix = "qa_" + uuid.uuid4().hex[:12]
     config = CampaignConfig(
         model=model, expand_model=model, subquery_count=1, workers=1, task_retries=0,
         dataset=prefix + "_l1", l2_dataset=prefix + "_l2", l3_dataset=prefix + "_l3",
-        auto_pipeline=str(pipeline), pipeline_model=model, pipeline_batch_size=2,
+        auto_pipeline=str(pipeline) if stop_after != "raw" else "", pipeline_model=model, pipeline_batch_size=2,
         focus_keywords=[request, *(focus or [])],
         webagent_config={"model": model, "browser_backend": "httpx", "max_pages": max_pages,
                          # Discovery needs alternatives even when collecting one page.
@@ -169,6 +176,8 @@ def run_qa(request: str, *, warehouse: Path, run: Path, output: Path,
         if base_warehouse:
             _copy_previous(base_warehouse, warehouse, config)
         with UsageMeter(warehouse, run) as meter:
+            if stop_after != "qa":
+                return _execute_sources(runner, request, warehouse, run, config, meter, stop_after)
             return _execute_qa(runner, request, warehouse, run, output, config, meter,
                                target_rows=target_rows, max_rounds=max_rounds, max_pages=max_pages)
     finally:
@@ -180,12 +189,16 @@ def _copy_previous(base: Path, warehouse: Path, config):
     from .chat.worker import read_sources
     store = DataStore.open(warehouse)
     try:
-        for level, dataset in (("L2", config.l2_dataset), ("L3", config.l3_dataset)):
+        for level, dataset in (("L1", config.dataset), ("L2", config.l2_dataset), ("L3", config.l3_dataset)):
             did = store.catalog.add_dataset(name=dataset, source="continued_version")
             store.ingest_records(did, read_sources(base, level=level),
                                  defaults={"quality_level": level}, decontaminate=False)
     finally:
         store.close()
+    from .qa_artifacts import stage_records, save_stage, identity
+    for stage in ('source-review', 'candidates'):
+        for record in stage_records(base, stage):
+            save_stage(warehouse, stage, record.get('candidate_id') or identity(record), record)
 
 
 def _execute_qa(runner, request, warehouse, run, output, config, meter, *,
@@ -250,7 +263,7 @@ def _execute_qa(runner, request, warehouse, run, output, config, meter, *,
         store = DataStore.open(warehouse)
         try:
             result = export_qa(store, config.l3_dataset, output, target_rows=target_rows) if rows else {
-                "rows": 0, "output": None, "sources": None, "factual_verification": "not_performed"}
+                "rows": 0, "output": None, "sources": None, "factual_verification": "model_source_review"}
         finally:
             store.close()
         if not rows and not target_rows:
@@ -263,10 +276,39 @@ def _execute_qa(runner, request, warehouse, run, output, config, meter, *,
                        "page_budget": max_pages, "page_budget_allocated": allocated,
                        "source_dataset": config.l2_dataset, "qa_dataset": config.l3_dataset,
                        "run": str(run), "warehouse": str(warehouse)})
+        from .qa_artifacts import export_stages
+        result["artifacts"] = export_stages(warehouse, run / "artifacts")
         (run / "report.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
         return result
     except (Exception, KeyboardInterrupt) as exc:
         status = "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed"
         snapshot = progress.stop(status)
         (run / "report.json").write_text(json.dumps({"status": status, "error": str(exc), "usage": snapshot["usage"]}, ensure_ascii=False, indent=2) + "\n")
+        raise
+
+
+def _execute_sources(runner, request, warehouse, run, config, meter, stop_after):
+    from .qa_artifacts import export_stages
+    progress = QAProgress(warehouse, run, config, meter)
+    progress.start()
+    try:
+        campaign = runner.start(request, config)
+        (run / 'campaign.json').write_text(json.dumps(campaign, ensure_ascii=False, indent=2))
+        pipeline = campaign.get('pipeline') or {}
+        empty = str(pipeline.get('error', '')).startswith('no records materialized') and not any(
+            stage.get('failed') for stage in pipeline.get('stages', [])) and not campaign.get('queue', {}).get('failed')
+        if campaign.get('status') != 'completed' and not empty:
+            raise RuntimeError('Source collection did not complete; inspect campaign.json')
+        snapshot = progress.stop('completed')
+        result = {'status': 'completed', 'stop_after': stop_after, 'rows': 0,
+                  'request': request, 'factual_verification': 'not_performed',
+                  'pages_collected': snapshot['pages_collected'], 'sources_accepted': snapshot['sources_accepted'],
+                  'source_dataset': config.l2_dataset, 'qa_dataset': config.l3_dataset,
+                  'usage': snapshot['usage'], 'elapsed_seconds': snapshot['elapsed_seconds'],
+                  'artifacts': export_stages(warehouse, run / 'artifacts')}
+        (run / 'report.json').write_text(json.dumps(result, ensure_ascii=False, indent=2))
+        return result
+    except (Exception, KeyboardInterrupt) as exc:
+        snapshot = progress.stop('failed')
+        (run / 'report.json').write_text(json.dumps({'status': 'failed', 'error': str(exc), 'usage': snapshot['usage']}))
         raise

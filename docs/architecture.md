@@ -20,10 +20,14 @@ flowchart TD
     Download --> Store[DataMixer warehouse]
     L1 --> Store
     Store --> Pipeline[DataFlow and custom operators]
-    Pipeline --> L2[L2 text]
-    L2 --> Generate[Model-based generation]
-    Generate --> L3[L3 initial SFT]
-    L3 --> Export[Recipe / export]
+    Pipeline --> L2[L2 selected text and evidence segments]
+    L2 --> Generate[Bounded QA candidates]
+    Generate --> Review[Separate source review]
+    Review --> L3[L3 candidates with review results]
+    L3 --> Export[Reviewed QA export]
+    L1 --> RawExport[Raw dataset download]
+    L2 --> CorpusExport[Corpus download]
+    Generate --> CandidateExport[Candidate and review archive]
 ```
 
 ## Conversational workspace
@@ -54,9 +58,8 @@ token for mutations. It is a local single-user app, not a multi-user hosted serv
 ## Control flow
 
 With `build --output`, `voyager.py` calls `qa_pipeline.py`: one bounded web campaign
-streams HTML through extraction, relevance filtering, QA generation, and structural
-validation. The original request is passed into the QA prompt. Export produces
-Alpaca JSONL plus a separate source manifest, with exact-pair deduplication.
+streams HTML through section extraction, exact-topic evidence selection, QA generation, and model-assisted source review. The original request is passed into the QA prompt. Export produces
+Alpaca JSONL plus a separate source manifest, with reviewed-only counting and question deduplication. [Stage datasets](evidence-pipeline.md) can also be exported independently.
 `qa_progress.py` reads committed campaign and warehouse state and writes atomic
 progress snapshots. Model requests are metered at the shared HTTP client boundary;
 per-warehouse accounting includes worker/operator threads and retry attempts.
@@ -87,7 +90,7 @@ blob/catalog/index storage layers using the same labels.
 - Operators implement setup/process/teardown in `operators/base.py`.
 - YAML pipelines combine native DataFlow operators, custom operators and LLM calls.
 - Code and Text-to-SQL examples contain specialized validation paths. Generic QA's
-  final validator checks dialogue structure; semantic verification is a separate milestone.
+  workflow now includes evidence-based model review; independent expert verification remains outside the automated pipeline.
 
 ## Name and background
 

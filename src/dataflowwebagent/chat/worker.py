@@ -50,7 +50,8 @@ def revise(request: str, *, base_warehouse: Path, warehouse: Path, run: Path, ou
             raise ValueError("No accepted source text is available to revise; start a new collection")
         spec = pipeline_spec(request, model)["pipeline"]
         spec["source"] = {"dataset": "reused_sources"}
-        spec["operators"] = spec["operators"][-2:]
+        # Re-evaluate the full saved corpus against revised requirements.
+        # It contains text, so evidence_prepare also works without raw HTML.
         config = SimpleNamespace(dataset="no_new_crawl", l2_dataset="reused_sources", l3_dataset="qa_l3")
         with UsageMeter(warehouse, run) as meter:
             progress = QAProgress(warehouse, run, config, meter, pipeline_reader=read_progress)
@@ -62,13 +63,15 @@ def revise(request: str, *, base_warehouse: Path, warehouse: Path, run: Path, ou
                 if rows or not target_rows:
                     result = export_qa(store, "qa_l3", output, target_rows=target_rows)
                 else:
-                    result = {"rows": 0, "output": None, "sources": None, "factual_verification": "not_performed"}
+                    result = {"rows": 0, "output": None, "sources": None, "factual_verification": "model_source_review"}
                 result.update(quantity_result(result["rows"], target_rows, "existing_sources_exhausted"))
                 progress.quantity = {"target_rows": target_rows, "generated_rows": result["rows"], "shortfall": result["shortfall"]}
                 snapshot = progress.stop(result["status"])
                 result.update(request=request, mode="revise", source_dataset="reused_sources",
                               qa_dataset="qa_l3", warehouse=str(warehouse), run=str(run),
                               reused_sources=copied.written, usage=snapshot["usage"], elapsed_seconds=snapshot["elapsed_seconds"])
+                from ..qa_artifacts import export_stages
+                result["artifacts"] = export_stages(warehouse, run / "artifacts")
                 (run / "report.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
                 return result
             except (Exception, KeyboardInterrupt) as exc:
@@ -87,7 +90,7 @@ def main():
     if job["action"] == "revise":
         revise(job["request"], base_warehouse=Path(job["base_warehouse"]), **kwargs)
     else:
-        run_qa(job["request"], max_pages=job["max_pages"],
+        run_qa(job["request"], max_pages=job["max_pages"], stop_after=job.get("stop_after", "qa"),
                base_warehouse=Path(job["base_warehouse"]) if job.get("base_warehouse") else None, **kwargs)
 
 

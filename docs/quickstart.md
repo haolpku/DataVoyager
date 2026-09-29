@@ -35,7 +35,7 @@ Specify the topic, intended audience, language, and answer style in the request.
 
 The run directory defaults to `<output>.run`, and its warehouse to `<output>.run/warehouse`. Override them with `--run` and `--warehouse`. Use fresh output and run paths for a new request. Existing outputs are never overwritten.
 
-`--max-pages` bounds pages collected by the crawl, not QA count, discovery page inspections, API calls, or money spent. The quick path uses one search task with a bounded discovery loop. It currently generates at most one QA pair per accepted source document. A requested sample count is not a guaranteed quota.
+`--max-pages` bounds pages collected by the crawl, not QA count, discovery page inspections, API calls, or money spent. The quick path uses one search task with a bounded discovery loop. It generates at most six candidates per accepted document, then counts only source-reviewed and deduplicated QA. A requested sample count is not a guaranteed quota.
 
 `--domain` and repeated `--focus` provide extra filtering hints. `--keywords` and `--target-datasets` belong to the advanced acquisition workflow without `--output`.
 
@@ -67,16 +67,17 @@ The display shows active processing stages, collected pages, accepted source doc
 
 `api_calls.jsonl` records per-attempt model name, outcome, elapsed time, and reported token counts. It does not record credentials or prompt/response bodies. `report.json` retains accumulated usage on success and handled failure.
 
-Source text is extracted with the built-in HTML extractor, then classified and filtered using relevance signals and evidence. QA generation is instructed to use the source and honor the request. Export requires a nonempty user/assistant pair, rejects identical questions and answers, and removes exact duplicate pairs.
+Source text is cleaned and split into sections, selected against the exact topic, and used for evidence-backed QA generation. A separate model call reviews each candidate. Export requires source-review approval, nonempty questions and answers, and question deduplication. See [stage exports and evidence processing](evidence-pipeline.md) for stopping before QA, downloading intermediate data and review limitations.
 
-These checks do not independently verify answer correctness, semantic duplicates, or licensing. Review samples and source permissions before training or redistribution. There is no benchmarked accuracy or throughput claim.
+Model source review is not independent expert verification. Bounded semantic comparisons do not catch every duplicate or cross-source conflict, and the pipeline does not verify licensing. Review samples and source permissions before training or redistribution. There is no benchmarked accuracy or throughput claim.
 
 ## Files
 
 | Path | Contents |
 |---|---|
 | `<output>` | Training rows: `instruction`, `input`, `output` |
-| `<output>.sources.jsonl` | 1-based output row, sample ID, source URL, title, tags |
+| `<output>.sources.jsonl` | Output row, candidate ID, source segment, claim evidence and review |
+| `<output>.run/artifacts/` | Raw pages, selected corpus, source-selection decisions and QA candidates |
 | `<output>.run/request.json` | Original request and crawl budget |
 | `<output>.run/progress.json` | Latest progress and usage snapshot |
 | `<output>.run/api_calls.jsonl` | Finished model request attempts, including retries |

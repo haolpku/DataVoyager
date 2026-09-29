@@ -97,10 +97,12 @@ datavoyager status --run data/python-qa.jsonl.run
 | `data/python-qa.jsonl.sources.jsonl` | Source URL and metadata for each exported row |
 | `data/python-qa.jsonl.run/report.json` | Final row count, elapsed time, and model API usage |
 
-The pipeline filters source text, checks QA structure, and removes identical QA pairs. Generated answers still need review before training. Token counts come from provider responses; missing usage is flagged, and monetary cost is not inferred. See the [usage and quality notes](docs/quickstart.md#what-the-numbers-mean).
+The pipeline selects topic evidence, generates QA with references, and makes a separate model-assisted source review. Only reviewed, deduplicated QA count toward the target; this is not expert certification. Generated answers still need review before training. Token counts come from provider responses; missing usage is flagged, and monetary cost is not inferred. See the [usage and quality notes](docs/quickstart.md#what-the-numbers-mean).
 
 ---
 
 [Advanced acquisition & DataFlow pipelines](docs/runtime.md) · [Roadmap](docs/roadmap.md) · [Attribution & licensing](THIRD_PARTY_NOTICES.md)
 
 Developer preview. A project-level license has not yet been assigned.
+
+Intermediate datasets are independently downloadable, including after cancellation. You can also stop after raw collection or corpus preparation. See [stage datasets and evidence-based QA](docs/evidence-pipeline.md) for the new workflow and model-review limitations.

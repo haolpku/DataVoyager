@@ -33,7 +33,7 @@ function render(snapshot){
   if(plan){
     const revising=plan.decision.action==='revise';
     $('plan-budget').parentElement.hidden=revising;
-    $('plan-explanation').textContent=revising?`要求 ${number(plan.target_rows)} 条，复用现有资料最多支持 ${number(plan.capacity_upper_bound)} 条，实际可能更少。可以降低目标，或在对话中提出新增采集。`:`要求 ${number(plan.target_rows)} 条。按当前预算和每份资料最多一题的流程，上限为 ${number(plan.capacity_upper_bound)} 条，实际可能更少。尚未开始采集。`;
+    $('plan-explanation').textContent=revising?`要求 ${number(plan.target_rows)} 条，复用现有资料最多支持 ${number(plan.capacity_upper_bound)} 条，实际可能更少。可以降低目标，或在对话中提出新增采集。`:`要求 ${number(plan.target_rows)} 条。按每份资料最多六条候选计算，理论上限为 ${number(plan.capacity_upper_bound)} 条，实际可能更少。尚未开始采集。`;
     if(state.planId!==plan.id){state.planId=plan.id;$('plan-target').value=plan.target_rows;$('plan-budget').value=plan.max_pages;}
     $('confirm-plan').disabled=snapshot.busy;$('dismiss-plan').disabled=snapshot.busy;
   }
@@ -69,6 +69,16 @@ function renderRun(){
   $('qa-tokens').textContent=`${number(u.input_tokens)} / ${number(u.output_tokens)}`;
   const partial=(run&&u.usage_complete===false)||turns.some(t=>!t.usage);
   $('usage-note').textContent=partial?'部分用量尚未返回或不可用；显示已报告 token，不推算金额。':'用量来自接口返回；主 Agent 统计对话轮次，流水线统计请求次数，不推算金额。';
+  const stageNames={'raw':'原始网页','corpus':'正文与证据','source-review':'正文筛选记录','candidates':'QA 候选及审核'};
+  $('stage-downloads').replaceChildren(...Object.entries(stageNames).map(([key,label])=>{
+    const count=run?.stage_artifacts?.[key]||0;
+    const node=el(count?'a':'span','stage-download',`${label} · ${number(count)} 条${count?' ↓':''}`);
+    if(count)node.href=`/api/sessions/${state.sid}/runs/${run.id}/download/${key}`;
+    return node;
+  }));
+  const reviews=run?.review_counts||{};
+  $('review-counts').textContent=run?`来源审核通过 ${number(reviews.source_supported)} · 待复核 ${number(reviews.needs_review)} · 尚未审核 ${number(reviews.unreviewed)} · 重复 ${number(reviews.duplicate)}`:'';
+  $('quality-note').textContent=(run?.report?.factual_verification==='model_source_review'||run?.stop_after==='qa')?'目标题数仅统计来源审核通过并去重的 QA；模型审核不等于专家认证。':run&&['raw','corpus'].includes(run.stop_after)?'此版本在生成 QA 前结束，可下载已保存的阶段数据。':'旧版本或尚未完成审核的样本，不计为已验证事实。';
   const samples=run?.samples || [];
   $('sample-count').textContent=run?.report?.rows!==undefined?`共 ${number(run.report.rows)} 条 · 预览 ${samples.length} 条`:`${samples.length} 条候选 · 最多 5 条`;
   if(samples.length){$('samples').replaceChildren(...samples.map((s,i)=>{const card=el('article','sample');card.append(el('span','sample-index',`QA / ${String(i+1).padStart(2,'0')}`),el('h4','',s.instruction),el('p','',s.output));try{const url=new URL(s.source_url);if(['https:','http:'].includes(url.protocol)){const a=el('a','',url.hostname+' ↗');a.href=url.href;a.target='_blank';a.rel='noopener noreferrer';card.append(a);}}catch{}return card;}));}

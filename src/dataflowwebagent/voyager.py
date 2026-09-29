@@ -36,6 +36,10 @@ def main(argv: list[str] | None = None) -> int:
     status = sub.add_parser("status", help="show a QA run's latest progress and API usage")
     status.add_argument("--run", type=Path, required=True)
     status.add_argument("--json", action="store_true")
+    export = sub.add_parser("export", help="export a saved intermediate dataset without model calls")
+    export.add_argument("--warehouse", type=Path, required=True)
+    export.add_argument("--stage", choices=["raw", "corpus", "source-review", "candidates"], required=True)
+    export.add_argument("--output", type=Path, required=True)
     build = sub.add_parser("build", help="start acquisition from a natural-language request")
     build.add_argument("request", help="describe the desired dataset and quality requirements")
     build.add_argument("--domain", default="")
@@ -46,6 +50,7 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--max-pages", type=_positive, default=20, help="page budget for --output mode (default: 20)")
     build.add_argument("--target-rows", type=_positive, help="desired unique QA count; inferred from explicit request counts when omitted")
     build.add_argument("--max-rounds", type=_positive, default=5, help="bounded refill rounds within --max-pages (default: 5)")
+    build.add_argument("--stop-after", choices=["raw", "corpus", "qa"], default="qa", help="stop at raw collection, selected corpus, or reviewed QA")
     build.add_argument("--warehouse", type=Path)
     build.add_argument("--run", type=Path)
     build.add_argument("--dry-run", action="store_true", help="print the request without network calls or writes")
@@ -67,6 +72,15 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(json.dumps(snapshot, ensure_ascii=False, indent=2) if args.json else format_progress(snapshot))
         return 0
+    if args.command == "export":
+        from .qa_artifacts import export_stage
+        if args.output.exists():
+            parser.error("output already exists; choose a new path")
+        if not (args.warehouse / "catalog.db").is_file():
+            parser.error("warehouse does not exist")
+        count = export_stage(args.warehouse, args.stage, args.output, overwrite=False)
+        print(json.dumps({"stage": args.stage, "rows": count, "output": str(args.output)}, ensure_ascii=False))
+        return 0
     if not args.request.strip():
         parser.error("request must not be empty")
     spec = {
@@ -77,6 +91,8 @@ def main(argv: list[str] | None = None) -> int:
         "target_datasets": args.target_datasets,
     }
     output = args.output.expanduser().resolve() if args.output else None
+    if args.stop_after != "qa" and output is None:
+        output = ((args.run or Path("runs/source-collection")) / "qa.jsonl").expanduser().resolve()
     default_run = output.with_name(output.name + ".run") if output else Path("runs/acquisition")
     run = (args.run or default_run).expanduser().resolve()
     warehouse = (args.warehouse or (run / "warehouse" if output else Path("runs/warehouse"))).expanduser().resolve()
@@ -87,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         if output:
             from .qa_quantity import resolve_target
             preview.update({"mode": "web_qa", "output": str(output), "format": "alpaca", "max_pages": args.max_pages,
-                            "target_rows": resolve_target(args.request, args.target_rows), "max_rounds": args.max_rounds})
+                            "target_rows": resolve_target(args.request, args.target_rows) if args.stop_after == "qa" else None, "max_rounds": args.max_rounds, "stop_after": args.stop_after})
         print(json.dumps(preview,
                          ensure_ascii=False, indent=2))
         return 0
@@ -96,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             result = run_qa(args.request.strip(), warehouse=warehouse, run=run, output=output,
                             max_pages=args.max_pages, focus=[x for x in [args.domain, *args.focus] if x],
-                            target_rows=args.target_rows, max_rounds=args.max_rounds)
+                            target_rows=args.target_rows, max_rounds=args.max_rounds, stop_after=args.stop_after)
         except (ValueError, RuntimeError, OSError, KeyError) as exc:
             print(json.dumps({"status": "failed", "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
             return 1

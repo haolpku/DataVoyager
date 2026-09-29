@@ -97,7 +97,7 @@ datavoyager status --run data/python-qa.jsonl.run
 | `data/python-qa.jsonl.sources.jsonl` | 每条导出问答的来源链接和元信息 |
 | `data/python-qa.jsonl.run/report.json` | 最终条数、耗时和模型 API 用量 |
 
-流程会筛选资料、检查问答结构，并去除完全相同的问答对。训练前仍需抽检生成答案。Token 用量采用接口返回值，缺失时会明确标注；金额不做推算。详见[用量与质量说明](docs/quickstart.md#what-the-numbers-mean)。
+流程会按具体主题筛选证据、生成带引用的候选，再单独审核来源支撑情况。只有审核通过并去重的 QA 计入目标，模型审核不等于专家认证。原始网页、整理后的语料、筛选记录和 QA 候选都可独立下载，也支持只采集或只整理资料，见[阶段数据与证据流程](docs/evidence-pipeline.md)。训练前仍需抽检生成答案。Token 用量采用接口返回值，缺失时会明确标注；金额不做推算。详见[用量与质量说明](docs/quickstart.md#what-the-numbers-mean)。
 
 ---
 

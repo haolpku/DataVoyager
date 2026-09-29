@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from qa_fixtures import approved_content, evidence_response
 
 from dataflowwebagent import qa_pipeline, voyager
 from dataflowwebagent.qa_quantity import infer_target, resolve_target
@@ -42,9 +43,7 @@ def fixture_campaign(monkeypatch, warehouse, batches):
                 records = []
                 for question, answer in batches[min(index, len(batches) - 1)]:
                     url = f'https://example.org/{index}/{len(records)}'
-                    content = {'text': answer, 'source_url': url} if level == 'L2' else {
-                        'messages': [{'role': 'user', 'content': question}, {'role': 'assistant', 'content': answer}],
-                        'provenance': {'source_url': url}}
+                    content = {'text': answer, 'source_url': url} if level == 'L2' else approved_content(question, answer, url=url)
                     records.append({'content': content})
                 store.ingest_records(did, records, defaults={'quality_level': level}, decontaminate=False)
         finally:
@@ -147,21 +146,15 @@ def test_real_campaign_refills_across_rounds(tmp_path, monkeypatch):
     monkeypatch.setattr(web.WebPageFetcher, 'fetch', fetch)
     def post(url, payload, key, timeout):
         prompt = payload['messages'][-1]['content']
-        if 'Allowed labels:' in prompt:
-            item = {'index': 0, 'labels': ['code'], 'confidence': .99, 'semantic_signals': [
-                {'type': 'iterator', 'evidence': 'A generator returns an iterator.', 'confidence': .99},
-                {'type': 'execution', 'evidence': 'Its execution pauses at yield and resumes on next.', 'confidence': .99}]}
-        else:
-            item = {'index': 0, 'question': f'Question about generator behavior number {len(discovered)}?',
-                    'answer': 'A generator returns an iterator.'}
-        return {'choices': [{'message': {'content': json.dumps({'results': [item]})}}],
+        item = evidence_response(payload['messages'], question=f'Question about generator behavior number {len(discovered)}?', answer='A generator returns an iterator.')
+        return {'choices': [{'message': {'content': json.dumps(item)}}],
                 'usage': {'prompt_tokens': 10, 'completion_tokens': 5}}
     monkeypatch.setattr(llm, '_post', post)
     result = qa_pipeline.run_qa('Create 3 QA pairs about generators', warehouse=warehouse,
                                 run=tmp_path / 'run', output=tmp_path / 'qa.jsonl', max_pages=10)
     assert result['status'] == 'completed' and result['rows'] == 3
     assert len(discovered) == 3 and len(result['rounds']) == 3
-    assert result['usage']['calls'] == 6
+    assert result['usage']['calls'] == 9
     progress = json.loads((tmp_path / 'run/progress.json').read_text())
     assert progress['sources_accepted'] == 3 and progress['qa_candidates'] == 3
 

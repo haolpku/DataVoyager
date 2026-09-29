@@ -12,7 +12,8 @@ import time
 
 from .agents.Obtainer.datamixer.telemetry import UsageMeter
 
-_LABELS = {"webpage_to_pt": "extracting text", "domain_classify": "checking relevance",
+_LABELS = {"evidence_prepare": "cleaning / segmenting sources", "evidence_select": "selecting topic evidence",
+           "evidence_qa_generate": "generating evidence-backed QA", "evidence_qa_review": "reviewing QA claims","webpage_to_pt": "extracting text", "domain_classify": "checking relevance",
            "topic_quality_filter": "filtering sources", "pt_to_sft_qa": "generating QA",
            "sft_validate": "validating QA"}
 
@@ -80,11 +81,13 @@ class QAProgress:
             self.stage = ", ".join(_LABELS.get(name, name) for name in active) or "searching / collecting sources"
             if pipeline.get("status") == "completed":
                 self.stage = "exporting QA"
+        from .qa_artifacts import stage_counts
+        stages = stage_counts(self.warehouse)
         snapshot = {"status": self.status, "stage": self.stage, "pid": os.getpid(),
                     "updated_at": time.time(), "elapsed_seconds": round(time.monotonic() - self.started, 1),
                     "pages_collected": counts[self.config.dataset],
                     "sources_accepted": counts[self.config.l2_dataset],
-                    "qa_candidates": counts[self.config.l3_dataset],
+                    "qa_candidates": stages["candidates"], "stage_artifacts": stages,
                     "stages": pipeline.get("stages", []), "usage": self.meter.snapshot(), **dict(self.quantity)}
         if warning:
             snapshot["progress_warning"] = warning

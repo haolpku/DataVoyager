@@ -18,6 +18,7 @@ from . import posttrain  # noqa: F401 - side effect: register post-training ops
 from . import scorers  # noqa: F401 - side effect: register model-based scorers
 from . import dataflow  # noqa: F401 - side effect: register the DataFlow bridge
 from . import webpage  # noqa: F401 - side effect: register webpage/PT/SFT ops
+from . import evidence  # noqa: F401 - evidence-first QA operators
 from . import domain  # noqa: F401 - side effect: register domain-specific L3 ops
 from .dataflow import (
     DataFlowBridge,

@@ -60,6 +60,15 @@ def preview(root: Path, limit=5) -> list:
     if not (warehouse / "catalog.db").exists():
         return []
     try:
+        from ..qa_artifacts import stage_records
+        for candidate in stage_records(warehouse, 'candidates'):
+            if candidate.get('status') == 'source_supported':
+                result.append({'instruction': candidate['question'], 'input': '', 'output': candidate['answer'],
+                               'source_url': candidate['source_url']})
+                if len(result) == limit:
+                    return result
+        if result:
+            return result
         with closing(sqlite3.connect((warehouse / "catalog.db").as_uri() + "?mode=ro", uri=True, timeout=1)) as conn:
             cas = ContentStore(warehouse)
             for (cid,) in conn.execute("SELECT cid FROM samples WHERE quality_level='L3' ORDER BY created_at LIMIT ?", (limit,)):
@@ -167,7 +176,9 @@ class Workspace:
             samples = preview(root)
         except (OSError, ValueError):
             samples = []  # An export may still be in the middle of writing a row.
+        from ..qa_artifacts import stage_counts, review_counts
         return {**run, "progress": progress, "report": report, "samples": samples,
+                "stage_artifacts": stage_counts(root / "warehouse"), "review_counts": review_counts(root / "warehouse"),
                 "downloadable": run["status"] in {"completed", "needs_confirmation", "accepted_partial", "continued"} and (root / "qa.jsonl").is_file()}
 
     def snapshot(self, sid):
@@ -271,6 +282,11 @@ class Workspace:
             raise ValueError("Dataset request is empty or too long")
         if not isinstance(pages, int) or isinstance(pages, bool) or not 1 <= pages <= 1000:
             raise ValueError("Page budget must be 1–1000")
+        stop_after = decision.get("stop_after", "qa")
+        if stop_after not in {"raw", "corpus", "qa"}:
+            raise ValueError("Unknown output stage")
+        if decision["action"] != "build" and stop_after != "qa":
+            raise ValueError("仅新建采集任务支持选择结束阶段")
         target = resolve_target(request, decision.get("target_rows"))
         if not confirmed:
             latest = next((m["content"] for m in reversed(state["messages"]) if m["role"] == "user"), "")
@@ -290,24 +306,27 @@ class Workspace:
                 target = resolve_target(request, decision.get("target_rows") or base.get("target_rows"))
                 if not target:
                     raise ValueError("该版本没有目标题数，请在对话中创建新需求")
-        capacity = (view["progress"].get("sources_accepted", 0) if base and decision["action"] == "revise"
-                    else pages + (view["report"].get("rows", 0) if base else 0))
+        from ..agents.Obtainer.datamixer.operators.evidence import MAX_QA_PER_DOCUMENT
+        capacity = (view["progress"].get("sources_accepted", 0) * MAX_QA_PER_DOCUMENT if base and decision["action"] == "revise"
+                    else pages * MAX_QA_PER_DOCUMENT + (view["report"].get("rows", 0) if base else 0))
+        if stop_after != "qa":
+            target = None
         if target and target > capacity and not confirmed:
             state["pending_plan"] = {"id": uuid.uuid4().hex[:16], "decision": {**decision, "request": request, "target_rows": target},
                                      "target_rows": target, "capacity_upper_bound": capacity, "max_pages": pages}
             basis = "已有资料" if decision["action"] == "revise" else "本次采集预算"
-            self._message(state, "system", f"目标是 {target} 条 QA。按当前每份资料最多生成一题的流程，{basis}最多支持 {capacity} 条，筛选后可能更少。请在确认卡片中调整或确认尝试；也可以在对话中修改需求。尚未开始数据任务。")
+            self._message(state, "system", f"目标是 {target} 条 QA。按当前每份资料最多生成六条候选的流程，{basis}最多支持 {capacity} 条，筛选后可能更少。请在确认卡片中调整或确认尝试；也可以在对话中修改需求。尚未开始数据任务。")
             self._save(state)
             return
         state.pop("pending_plan", None)
         rid = uuid.uuid4().hex[:16]
         root = self.session_dir(state["id"]) / "versions" / rid
-        job = {"action": decision["action"], "request": request, "max_pages": pages, "target_rows": target}
+        job = {"action": decision["action"], "request": request, "max_pages": pages, "target_rows": target, "stop_after": stop_after}
         if base:
             job["base_warehouse"] = str(root.parent / base["id"] / "warehouse")
         write_json(root / "job.json", job)
         run = {"id": rid, "version": len(state["runs"]) + 1, "action": decision["action"],
-               "request": request, "max_pages": pages, "target_rows": target, "base_run_id": base["id"] if base else None,
+               "request": request, "max_pages": pages, "target_rows": target, "stop_after": stop_after, "base_run_id": base["id"] if base else None,
                "status": "queued", "created_at": time.time()}
         state["runs"].append(run)
         self._save(state)
@@ -401,9 +420,12 @@ class Workspace:
                 report = read_json(root / "run" / "report.json")
                 run["status"] = report["status"] if code == 0 and report.get("status") in {"completed", "needs_confirmation"} else "failed"
                 if run["status"] == "completed":
-                    self._message(state, "system", f"版本 {run['version']} 已完成，导出 {report['rows']} 条 QA。可以预览、下载，或继续描述修改要求。")
+                    if report.get("stop_after") in {"raw", "corpus"}:
+                        self._message(state, "system", f"版本 {run['version']} 已完成：采集 {report['pages_collected']} 页，保留 {report['sources_accepted']} 份正文。已按要求在生成 QA 前结束，可下载阶段数据。")
+                    else:
+                        self._message(state, "system", f"版本 {run['version']} 已完成，导出 {report['rows']} 条来源审核通过的 QA。模型审核不等于专家认证。可以预览、下载，或继续修改。")
                 elif run["status"] == "needs_confirmation":
-                    self._message(state, "system", f"版本 {run['version']} 已生成 {report['rows']} / {report['target_rows']} 条，还差 {report['shortfall']} 条。当前补采已停止，不再消耗生成 API。可以接受当前数量、增加采集预算继续补齐，或在对话中调整主题／来源后创建新版本。数量只统计结构检查及问题去重，不代表事实质量已验证。")
+                    self._message(state, "system", f"版本 {run['version']} 已生成 {report['rows']} / {report['target_rows']} 条，还差 {report['shortfall']} 条。当前补采已停止，不再消耗生成 API。可以接受当前数量、增加采集预算继续补齐，或在对话中调整主题／来源后创建新版本。新版本数量统计来源审核通过并去重的 QA；模型审核不等于专家认证。")
                 else:
                     error = str(report.get("error") or last_line or "数据任务退出，未生成可用文件").replace(config["api_key"], "[redacted]")
                     run["error"] = error[:1500]
@@ -443,6 +465,14 @@ class Workspace:
             run = next((r for r in state["runs"] if r["id"] == identifier(rid)), None)
             if run is None:
                 raise KeyError("Version not found")
+            from ..qa_artifacts import STAGES, export_stage
+            if name in STAGES:
+                root = self.session_dir(sid) / "versions" / rid
+                if not (root / "warehouse" / "catalog.db").exists():
+                    raise ValueError("还没有已保存的阶段数据")
+                path = root / "run" / "artifacts" / (name + ".jsonl")
+                export_stage(root / "warehouse", name, path)
+                return path
             paths = {"qa": "qa.jsonl", "sources": "qa.jsonl.sources.jsonl", "report": "run/report.json"}
             if name not in paths or run["status"] not in {"completed", "needs_confirmation", "accepted_partial", "continued"}:
                 raise ValueError("该版本尚未完成导出")

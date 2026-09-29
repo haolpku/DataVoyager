@@ -818,7 +818,9 @@ class WebAgentCampaignRunner:
                 )
                 missing_levels = [
                     level for level, detail in pipeline_report["levels"].items()
-                    if source_final and not detail["count"]
+                    if source_final and not detail["count"] and level in ({"L1"} | {
+                        (op.get("output") or op.get("materialize") or {}).get("quality_level")
+                        for op in pipeline_meta["spec"].get("operators", [])})
                 ]
                 stage_failures = sum(
                     int(stage.get("failed") or 0)
@@ -1173,7 +1175,9 @@ class WebAgentCampaignRunner:
         finally:
             store.close()
         missing_levels = [
-            level for level, detail in counts.items() if not detail["count"]
+            level for level, detail in counts.items() if not detail["count"] and level in ({"L1"} | {
+                (op.get("output") or op.get("materialize") or {}).get("quality_level")
+                for op in spec.get("operators", [])})
         ]
         ok = not missing_levels
         return {

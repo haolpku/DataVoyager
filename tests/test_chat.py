@@ -10,6 +10,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pytest
+from qa_fixtures import evidence_response
 
 from dataflowwebagent.chat.server import ChatServer
 from dataflowwebagent.chat.workspace import Workspace, write_json, preview
@@ -137,7 +138,7 @@ def test_real_revision_subprocess_preserves_old_version_and_exports_sources(tmp_
             self.wfile.write(body)
         def do_POST(self):
             captured.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
-            content = json.dumps({"results": [{"index": 0, "question": "调用生成器函数会立即执行吗？", "answer": "不会。调用时返回迭代器，调用 next() 才开始执行。"}]}, ensure_ascii=False)
+            content = json.dumps(evidence_response(captured[-1]["messages"], question="调用生成器函数会立即执行吗？", answer="不会。调用时返回迭代器，调用 next() 才开始执行。"), ensure_ascii=False)
             body = json.dumps({"choices": [{"message": {"content": content}}], "usage": {"prompt_tokens": 80, "completion_tokens": 30}}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -165,8 +166,8 @@ def test_real_revision_subprocess_preserves_old_version_and_exports_sources(tmp_
             run = app.snapshot(sid)["runs"][-1]
             assert run["status"] == "completed", run
             assert run["report"]["reused_sources"] == 1
-            assert run["report"]["usage"]["calls"] == 1
-            assert run["report"]["usage"]["total_tokens"] == 110
+            assert run["report"]["usage"]["calls"] == 3
+            assert run["report"]["usage"]["total_tokens"] == 330
             assert run["progress"]["pages_collected"] == 0
             assert run["samples"][0]["source_url"] == "https://example.org/generators"
             assert "用中文解释容易误解的点" in captured[0]["messages"][-1]["content"]
@@ -257,7 +258,7 @@ def test_preflight_confirmation_is_persistent_and_cannot_be_replayed(tmp_path, m
     wait_until(lambda: not app.snapshot(sid)['busy'])
     assert not launched and not app.snapshot(sid)['runs']
     plan = app.snapshot(sid)['pending_plan']
-    assert plan['target_rows'] == 100 and plan['capacity_upper_bound'] == 5
+    assert plan['target_rows'] == 100 and plan['capacity_upper_bound'] == 30
     assert not any(m['content'] == '开始了' for m in app.snapshot(sid)['messages'])
     app.close()
     restored = Workspace(tmp_path, agent=agent)
@@ -321,4 +322,42 @@ def test_extend_shortfall_is_new_version_with_explicit_additional_budget(tmp_pat
     assert (root / 'qa.jsonl').read_bytes() == original
     with pytest.raises(ValueError, match='待确认'):
         app.resolve_shortfall(sid, rid, {'action': 'extend', 'max_pages': 30})
+    app.close()
+
+
+def test_stage_downloads_survive_cancel_and_do_not_require_qa(tmp_path):
+    from dataflowwebagent.qa_artifacts import save_stage
+    app = Workspace(tmp_path)
+    sid = app.create()['id']
+    rid, root = seed_version(app, sid)
+    app.chats[sid]['runs'][0]['status'] = 'cancelled'
+    (root / 'qa.jsonl').unlink()
+    store = DataStore.open(root / 'warehouse')
+    did = store.catalog.add_dataset(name='raw', source='test')
+    store.ingest_records(did, [{'content': {'html': '<p>Original raw page</p>', 'url': 'https://example.org'}}],
+                         defaults={'quality_level': 'L1'})
+    store.close()
+    save_stage(root / 'warehouse', 'candidates', 'id1', {'candidate_id': 'id1', 'status': 'unreviewed', 'question': 'Pending?'})
+    with server_for(app) as request:
+        prefix = f'/api/sessions/{sid}/runs/{rid}/download/'
+        assert json.loads(request(prefix + 'raw'))['content']['html'] == '<p>Original raw page</p>'
+        assert json.loads(request(prefix + 'corpus'))['content']['title'] == 'Generators'
+        assert json.loads(request(prefix + 'candidates'))['status'] == 'unreviewed'
+        assert request(f'/api/sessions/{sid}')['runs'][0]['stage_artifacts']['raw'] == 1
+        with pytest.raises(HTTPError): request(prefix + 'qa')
+        with pytest.raises(HTTPError): request(prefix + 'settings')
+
+
+def test_source_only_launch_preserves_stop_stage_and_ignores_qa_target(tmp_path, monkeypatch):
+    app = Workspace(tmp_path)
+    configure(app)
+    sid = app.create()['id']
+    monkeypatch.setattr(app, '_work', lambda *args: None)
+    app._launch(app.chats[sid], {'action': 'build', 'request': 'Collect 100 sources',
+        'max_pages': 2, 'target_rows': 100, 'stop_after': 'corpus'}, app.config)
+    state = app.chats[sid]
+    assert not state.get('pending_plan')
+    run = state['runs'][0]
+    job = json.loads((app.session_dir(sid) / 'versions' / run['id'] / 'job.json').read_text())
+    assert job['stop_after'] == 'corpus' and job['target_rows'] is None
     app.close()
