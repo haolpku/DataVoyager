@@ -13,13 +13,13 @@
   <div class="workspace">
     <section class="conversation" aria-label="与 DataVoyager 对话">
       <div id="feed" class="feed" role="log" aria-live="polite">
-        <div id="welcome" class="welcome"><span class="intro-badge">A CONVERSATION AWAY</span><h2>把需求，<br>变成数据。</h2><p>描述你想让模型学会什么。<br>一起找资料、看样例，把问答打磨成训练数据。</p>
-          <div class="examples"><button data-prompt="为 Python 初学者制作中文生成器问答，附简短代码示例，优先参考官方文档。先采集 5 个页面看样例。"><span>01 / 编程教育</span>Python 生成器问答 <b>↗</b></button><button data-prompt="制作关于 PostgreSQL 索引优化的中文问答，面向有经验的开发者，优先参考官方文档。先做一小批样例。"><span>02 / 专业知识</span>PostgreSQL 索引优化 <b>↗</b></button></div>
+        <div id="welcome" class="welcome"><span class="intro-badge">A CONVERSATION AWAY</span><h2>把需求，<br>变成数据。</h2><p>描述你需要的金融或医疗问答。<br>从网上收集资料、筛选内容，生成带来源的 QA 数据集。</p>
+          <div class="examples"><button data-prompt="收集美国投资者教育的权威资料，为金融初学者制作关于基金、债券、分散投资和费用的中文 QA 数据集。优先参考 Investor.gov、SEC 和 FINRA，保留来源、适用地区及关键条件。每个回答 2–5 句话，先生成 10 条样例。"><span>01 / 金融数据收集</span>基金与债券问答 <b>↗</b></button><button data-prompt="收集成人高血压和 2 型糖尿病的权威健康教育资料，制作关于症状、危险因素、筛查和一般预防的中文 QA 数据集。优先参考 WHO、MedlinePlus 和 NHS，保留来源，标明所采用的标准、适用人群和不确定性。每个回答 2–5 句话，先生成 10 条样例。"><span>02 / 医疗数据收集</span>高血压与糖尿病问答 <b>↗</b></button></div>
           <div class="workflow"><span>寻找资料</span><i>→</i><span>筛选正文</span><i>→</i><span>生成问答</span><i>→</i><span>训练文件</span></div>
         </div><div id="messages"></div><div id="thinking" class="thinking" hidden><span class="pulse"></span>DataVoyager 正在理解你的需求…</div>
         <section id="plan-card" class="confirmation-card" hidden aria-label="确认目标题数与预算"><h3>先确认题数与采集预算</h3><p id="plan-explanation"></p><div class="confirmation-fields"><label>目标题数<input id="plan-target" type="number" min="1" max="10000" step="1"></label><label>采集预算（页）<input id="plan-budget" type="number" min="1" max="1000" step="1"></label></div><p>实际数量取决于资料和筛选结果；不足时会再次暂停确认。</p><div class="confirmation-buttons"><button id="confirm-plan">按此目标和预算尝试</button><button id="dismiss-plan" class="secondary">取消计划</button></div></section>
       </div>
-      <div class="composer-wrap"><div id="notice" class="notice" role="status" hidden></div><form id="composer"><label for="prompt" class="sr-only">数据需求或修改意见</label><textarea id="prompt" rows="3" placeholder="例如：给初学者做一份 Python 问答，回答要有代码…"></textarea><div class="composer-bottom"><span>可以随时补充需求、调整风格或询问进度</span><button id="send" type="submit" aria-label="发送消息">↑</button></div></form><p class="composer-note">Enter 发送 · Shift + Enter 换行<span>来源可追溯 · 版本可保留</span></p></div>
+      <div class="composer-wrap"><div id="notice" class="notice" role="status" hidden></div><form id="composer"><label for="prompt" class="sr-only">数据需求或修改意见</label><textarea id="prompt" rows="3" placeholder="例如：收集金融或医疗领域的权威资料，先生成 10 条中文问答…"></textarea><div class="composer-bottom"><span>可以随时补充需求、调整风格或询问进度</span><button id="send" type="submit" aria-label="发送消息">↑</button></div></form><p class="composer-note">Enter 发送 · Shift + Enter 换行<span>来源可追溯 · 版本可保留</span></p></div>
     </section>
     <aside class="inspector" aria-label="数据集进度与预览">
       <div class="inspector-title"><h2>数据工作台</h2><span id="run-status" class="status-pill">等待开始</span></div>
