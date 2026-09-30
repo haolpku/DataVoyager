@@ -9,7 +9,7 @@ function fakeThread(events: ThreadEvent[]) {
   return {runStreamed:async (prompt: string, options: TurnOptions) => {
     assert.equal(prompt,input.prompt);assert.ok(options.outputSchema);assert.ok(options.signal);
     const schema = options.outputSchema as {properties:{stop_after:{enum:string[]}}};
-    assert.deepEqual(schema.properties.stop_after.enum,["raw","corpus","qa"]);
+    assert.deepEqual(schema.properties.stop_after.enum,["discover","collect","merge","clean","raw","corpus","qa"]);
     return {events:(async function*(){yield* events;})()};
   }} as unknown as Thread;
 }
