@@ -117,14 +117,25 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(root: Path, port=8765):
-    import fcntl
+    try:
+        import fcntl
+    except ImportError:  # Windows
+        fcntl = None
+        import msvcrt
     root = root.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     # Prevent two supervisors from sharing and rewriting the same session state.
     with (root / ".server.lock").open("a") as lock_file:
         try:
-            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            if fcntl is not None:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:
+                lock_file.seek(0)
+                lock_file.write("0")
+                lock_file.flush()
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        except (BlockingIOError, OSError):
             raise ValueError("This chat workspace is already open in another server") from None
         app = Workspace(root)
         server = ChatServer(("127.0.0.1", port), app)

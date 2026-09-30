@@ -466,6 +466,8 @@ def _flatten_hf_candidates(search_results: dict[str, list[dict[str, Any]]]) -> l
                     "description": row.get("description", ""),
                     "downloads": row.get("downloads", 0),
                     "size": row.get("size"),
+                    "size_category": next((tag.split(":", 1)[1] for tag in (row.get("tags") or [])
+                                           if isinstance(tag, str) and tag.startswith("size_categories:")), ""),
                     "tags": row.get("tags", []),
                     "matched_keyword": keyword,
                     "url": f"https://huggingface.co/datasets/{dataset_id}",

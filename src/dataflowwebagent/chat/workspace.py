@@ -21,6 +21,19 @@ from ..agents.Obtainer.datamixer.cas import ContentStore
 from ..qa_quantity import resolve_target, infer_target
 
 
+def _terminate_process(process: subprocess.Popen, *, force: bool = True) -> None:
+    """Stop a worker on both POSIX and Windows."""
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            process.kill() if force else process.terminate()
+        else:
+            os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
+    except (ProcessLookupError, OSError):
+        pass
+
+
 def read_json(path: Path, default=None):
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -33,6 +46,12 @@ def write_json(path: Path, value):
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
     temp.replace(path)
+
+
+def redact_secret(value, secret) -> str:
+    """Redact a configured secret without corrupting messages when it is empty."""
+    text = str(value)
+    return text.replace(secret, "[redacted]") if secret else text
 
 
 def identifier(value):
@@ -196,7 +215,7 @@ class Workspace:
             state = self._state(sid)
             if state["busy"]:
                 raise ValueError("主 agent 正在回复，请稍后再发")
-            if not self.public_config()["configured"]:
+            if not self.public_config()["configured"] and stop_after != "discover":
                 raise ValueError("请先配置 API")
             if self.closed:
                 raise ValueError("服务正在关闭")
@@ -224,7 +243,7 @@ class Workspace:
                 if event.get("type") == "_process_started":
                     process = event["process"]
                     if self.closed:
-                        os.killpg(process.pid, signal.SIGKILL)
+                        _terminate_process(process)
                     else:
                         self.agent_processes[sid] = process
                     return
@@ -254,7 +273,18 @@ class Workspace:
                                                       if m.get("role") == "user"), "qa"),
                        "pending_plan": snapshot.get("pending_plan"),
                        "runs": [{k: r.get(k) for k in ("id", "action", "request", "status", "progress", "samples", "report", "target_rows")} for r in snapshot["runs"][-6:]]}
-            decision = self.agent(context, config, self.session_dir(sid), emit)
+            if context["requested_stop_after"] == "discover":
+                # Catalog discovery is a deterministic, source-only operation.
+                # It should remain available when an OpenAI-compatible endpoint
+                # cannot satisfy Codex CLI's optional model-list refresh, and it
+                # must not spend a model call merely to launch a search.
+                request = next((m["content"] for m in reversed(context["messages"])
+                                if m.get("role") == "user"), "")
+                decision = {"action": "build", "request": request, "max_pages": 50,
+                            "target_rows": 0, "base_run_id": "", "stop_after": "discover",
+                            "reply": "I’ll search the dataset catalogs and show candidate sources before downloading data or generating QA."}
+            else:
+                decision = self.agent(context, config, self.session_dir(sid), emit)
             with self.lock:
                 state = self._state(sid)
                 action = decision.get("action")
@@ -269,7 +299,7 @@ class Workspace:
                 turn["status"] = "completed"
         except Exception as exc:
             with self.lock:
-                error = str(exc).replace(config["api_key"], "[redacted]")[:1500]
+                error = redact_secret(exc, config.get("api_key"))[:1500]
                 self._message(self._state(sid), "system", "本轮未完成：" + error)
                 turn["status"] = "failed"
         finally:
@@ -284,14 +314,20 @@ class Workspace:
         if any(r["status"] in {"running", "queued"} for r in state["runs"]):
             raise ValueError("已有采集任务正在运行；请先停止，或等它结束后创建新版本")
         request = decision.get("request")
+        stop_after = {"raw": "collect", "corpus": "clean"}.get(decision.get("stop_after", "qa"), decision.get("stop_after", "qa"))
+        if stop_after not in {"discover", "collect", "merge", "clean", "qa"}:
+            raise ValueError("Unknown output stage")
         pages = decision.get("max_source_rows", decision.get("max_pages"))
         if not isinstance(request, str) or not request.strip() or len(request) > 16000:
             raise ValueError("Dataset request is empty or too long")
         if not isinstance(pages, int) or isinstance(pages, bool) or not 1 <= pages <= 1000:
-            raise ValueError("Dataset source row limit must be 1–1000")
-        stop_after = {"raw": "collect", "corpus": "clean"}.get(decision.get("stop_after", "qa"), decision.get("stop_after", "qa"))
-        if stop_after not in {"discover", "collect", "merge", "clean", "qa"}:
-            raise ValueError("Unknown output stage")
+            # Catalog-only discovery has no data download.  Use the normal
+            # candidate-search budget when an LLM returns 0/omits this optional
+            # planning field, instead of rejecting an otherwise valid request.
+            if stop_after == "discover":
+                pages = 50
+            else:
+                raise ValueError("Dataset source row limit must be 1–1000")
         if decision["action"] != "build" and stop_after != "qa":
             raise ValueError("仅新建采集任务支持选择结束阶段")
         target = resolve_target(request, decision.get("target_rows"))
@@ -333,6 +369,7 @@ class Workspace:
                "max_pages": pages, "target_rows": target, "stop_after": stop_after}
         if decision.get("selected_dataset_ids"):
             job["selected_dataset_ids"] = decision["selected_dataset_ids"]
+            job["selected_datasets"] = decision.get("selected_datasets", [])
         if base:
             job["base_warehouse"] = str(root.parent / base["id"] / "warehouse")
         write_json(root / "job.json", job)
@@ -357,8 +394,8 @@ class Workspace:
             candidates = report.get("selection_candidates") or []
             allowed = {row.get("dataset_id") for row in candidates}
             selected = data.get("dataset_ids")
-            if not isinstance(selected, list) or not 1 <= len(selected) <= 5 or any(item not in allowed for item in selected):
-                raise ValueError("请选择 1–5 个当前列表中的数据集")
+            if not isinstance(selected, list) or not selected or any(item not in allowed for item in selected):
+                raise ValueError("请选择当前列表中的至少 1 个数据集")
             if len(set(selected)) != len(selected):
                 raise ValueError("数据集不能重复选择")
             stage = data.get("stop_after", "qa")
@@ -372,7 +409,8 @@ class Workspace:
                 raise ValueError("来源样本上限需为 1–1000")
             decision = {"action": "build", "request": discovery["request"],
                         "max_source_rows": pages, "target_rows": target or 0,
-                        "stop_after": stage, "selected_dataset_ids": selected}
+                        "stop_after": stage, "selected_dataset_ids": selected,
+                        "selected_datasets": [copy.deepcopy(row) for row in candidates if row.get("dataset_id") in selected]}
             self._launch(state, decision, dict(self.config), confirmed=True)
             self._message(state, "user", f"已选择 {len(selected)} 个数据集，继续执行到：{stage}。")
             self._save(state)
@@ -453,16 +491,21 @@ class Workspace:
                 for key in ("KAGGLE_USERNAME", "KAGGLE_KEY"):
                     if os.environ.get(key):
                         worker_env[key] = os.environ[key]
+                # A Windows scheduled task starts in C:\\Windows\\System32 unless
+                # explicitly given a working directory.  The Hugging Face manager
+                # creates its bounded cache relative to cwd, so keep every worker
+                # inside this writable workspace regardless of how the server was
+                # launched.
                 process = subprocess.Popen([sys.executable, "-m", "dataflowwebagent.chat.worker", str(root / "job.json")],
                                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                                           env=worker_env, start_new_session=True)
+                                           env=worker_env, cwd=self.root, start_new_session=True)
                 self.processes[(sid, rid)] = process
                 run["status"] = "running"
                 self._save(state)
             # Drain without persisting a provider's raw error or credentials.
             last_line = ""
             for line in process.stderr:
-                last_line = line.strip().replace(config["api_key"], "[redacted]")[:1500]
+                last_line = redact_secret(line.strip(), config.get("api_key"))[:1500]
             code = process.wait()
             process.stderr.close()
             with self.lock:
@@ -470,7 +513,13 @@ class Workspace:
                 if run["status"] == "cancelled":
                     return
                 report = read_json(root / "run" / "report.json")
-                run["status"] = report["status"] if code == 0 and report.get("status") in {"completed", "needs_confirmation", "awaiting_source_selection"} else "failed"
+                # A worker may return a non-zero code after it has already
+                # persisted a legitimate non-success terminal outcome (for
+                # example, a quantity shortfall).  Preserve that actionable
+                # report instead of misleading the user with a generic error.
+                reported_status = report.get("status")
+                run["worker_exit_code"] = code
+                run["status"] = reported_status if reported_status in {"completed", "needs_confirmation", "awaiting_source_selection"} else "failed"
                 if run["status"] == "completed":
                     if report.get("stop_after") in {"collect", "merge", "clean", "raw", "corpus"}:
                         stage_name = {"collect": "找数据", "raw": "找数据", "merge": "合并数据", "clean": "清洗数据", "corpus": "清洗数据"}.get(report.get("stop_after"), "数据收集")
@@ -482,7 +531,12 @@ class Workspace:
                 elif run["status"] == "needs_confirmation":
                     self._message(state, "system", f"版本 {run['version']} 已生成 {report['rows']} / {report['target_rows']} 条，还差 {report['shortfall']} 条。当前补采已停止，不再消耗生成 API。可以接受当前数量、增加数据集样本上限继续补齐，或在对话中调整主题／来源后创建新版本。新版本数量统计来源审核通过并去重的 QA；模型审核不等于专家认证。")
                 else:
-                    error = str(report.get("error") or last_line or "数据任务退出，未生成可用文件").replace(config["api_key"], "[redacted]")
+                    search_errors = report.get("search_errors") or []
+                    search_error = next((row.get("error") for row in search_errors if isinstance(row, dict) and row.get("error")), None)
+                    if reported_status == "no_results":
+                        error = "No eligible dataset candidates were found after catalog quality filters."
+                    else:
+                        error = redact_secret(report.get("error") or search_error or last_line or "数据任务退出，未生成可用文件", config.get("api_key"))
                     run["error"] = error[:1500]
                     self._message(state, "system", f"版本 {run['version']} 失败：{run['error']}")
                 self._save(state)
@@ -491,7 +545,7 @@ class Workspace:
                 state = self._state(sid)
                 run = next(r for r in state["runs"] if r["id"] == rid)
                 run["status"] = "failed"
-                run["error"] = str(exc).replace(config["api_key"], "[redacted]")[:1500]
+                run["error"] = redact_secret(exc, config.get("api_key"))[:1500]
                 self._message(state, "system", "数据任务未完成：" + run["error"])
                 self._save(state)
 
@@ -506,10 +560,7 @@ class Workspace:
             run["status"] = "cancelled"
             process = self.processes.get((sid, rid))
             if process and process.poll() is None:
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
+                _terminate_process(process, force=False)
             self._message(state, "system", f"已停止版本 {run['version']}。保留已采集资料和用量记录，可继续调整需求。")
             self._save(state)
             return {"status": "cancelled"}
@@ -541,9 +592,6 @@ class Workspace:
             self.closed = True
             for process in self.agent_processes.values():
                 if process.poll() is None:
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
+                    _terminate_process(process)
             for sid, rid in list(self.processes):
                 self.cancel(sid, rid)

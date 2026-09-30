@@ -101,6 +101,7 @@ def main():
                     "language": row.get("language"), "rows_estimate": row.get("rows_estimate"),
                     "data_kind": row.get("data_kind"), "schema_summary": row.get("schema_summary"),
                     "curator_note": row.get("curator_note"), "curated": bool(row.get("curated")),
+                    "tags": list(row.get("tags") or []),
                     "url": (f"https://huggingface.co/datasets/{row['dataset_id']}" if row.get("source") == "huggingface"
                             else f"https://www.kaggle.com/datasets/{row['dataset_id']}"),
                     "match_score": _dataset_candidate_score(row, domain)} for row in candidates]
@@ -114,7 +115,7 @@ def main():
     else:
         run_qa(job["request"], max_pages=job.get("max_source_rows", job.get("max_pages", 50)), stop_after=job.get("stop_after", "qa"),
                base_warehouse=Path(job["base_warehouse"]) if job.get("base_warehouse") else None,
-               selected_dataset_ids=job.get("selected_dataset_ids"), **kwargs)
+               selected_dataset_ids=job.get("selected_dataset_ids"), selected_datasets=job.get("selected_datasets"), **kwargs)
 
 
 if __name__ == "__main__":

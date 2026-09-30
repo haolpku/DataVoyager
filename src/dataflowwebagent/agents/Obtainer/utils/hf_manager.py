@@ -75,18 +75,28 @@ class HuggingFaceManager:
             self._temp_cache_dir = None
             logger.info(f"[HuggingFace] Using default cache directory: {default_cache}")
 
-        # Lazy import HuggingFace dependencies
+        # Dataset discovery only needs ``huggingface_hub``.  Keep it independent
+        # from ``datasets``: a broken local NumPy/datasets extension must not
+        # make the public Hugging Face catalog unavailable.
         try:
             from huggingface_hub import HfApi, snapshot_download
-            from datasets import get_dataset_config_names
 
             self.hf_api = HfApi(endpoint=self.hf_endpoint)
             self._snapshot_download = snapshot_download
-            self._get_dataset_config_names = get_dataset_config_names
-        except ImportError as e:
-            logger.error(f"[HuggingFace] Failed to import dependencies: {e}")
+        except Exception as e:
+            logger.error(f"[HuggingFace] Failed to initialize Hub API: {e}")
             self.hf_api = None
             self._snapshot_download = None
+
+        # This helper is optional.  Downloads can still use snapshot_download
+        # without selecting a named dataset configuration.
+        try:
+            from datasets import get_dataset_config_names
+
+            self._get_dataset_config_names = None
+            self._get_dataset_config_names = get_dataset_config_names
+        except Exception as e:
+            logger.warning(f"[HuggingFace] Dataset configuration inspection unavailable: {e}")
             self._get_dataset_config_names = None
 
     @staticmethod

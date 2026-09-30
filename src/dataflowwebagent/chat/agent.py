@@ -1,4 +1,4 @@
-"""Codex SDK bridge; all actions are validated again by the Python supervisor."""
+"""Codex CLI bridge; all actions are validated again by the Python supervisor."""
 from __future__ import annotations
 
 import json
@@ -64,6 +64,19 @@ Never echo credentials. You do not need API secrets in conversation.
 """
 
 
+def _terminate_process(process: subprocess.Popen, *, force: bool = True) -> None:
+    """Stop the isolated runner on both POSIX and Windows."""
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            process.kill() if force else process.terminate()
+        else:
+            os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
+    except (ProcessLookupError, OSError):
+        pass
+
+
 def runner_path() -> Path:
     configured = os.environ.get("DATAVOYAGER_CHAT_RUNNER")
     if configured:
@@ -75,12 +88,12 @@ def runner_path() -> Path:
         path = parent / "codex-runner" / "dist" / "chat.js"
         if path.is_file():
             return path
-    raise ValueError("Build the chat runner first: cd codex-runner && corepack yarn install --immutable && corepack yarn build")
+    raise ValueError("The bundled Codex CLI chat bridge is missing: codex-runner/dist/chat.js")
 
 
 def clean_env(config: dict) -> dict:
     # Do not inherit unrelated provider keys or application runner controls.
-    allowed = {"PATH", "HOME", "USER", "TMPDIR", "TEMP", "SYSTEMROOT", "LANG", "LC_ALL",
+    allowed = {"PATH", "HOME", "USER", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TMPDIR", "TEMP", "SYSTEMROOT", "LANG", "LC_ALL",
                "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "SSL_CERT_FILE"}
     env = {key: value for key, value in os.environ.items() if key in allowed}
     env.update(DATAVOYAGER_MODEL=config["model"], DATAVOYAGER_BASE_URL=config["base_url"],
@@ -100,11 +113,7 @@ def codex_turn(context: dict, config: dict, workspace: Path, emit) -> dict:
                                text=True, encoding="utf-8", env=clean_env(config), start_new_session=True)
     # Node aborts its SDK turn; this watchdog handles a stuck runner as well.
     def terminate():
-        if process.poll() is None:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        _terminate_process(process)
     timer = threading.Timer(135, terminate)
     timer.start()
     decision = None
@@ -126,7 +135,7 @@ def codex_turn(context: dict, config: dict, workspace: Path, emit) -> dict:
                 emit(event)
         code = process.wait()
         if code or decision is None:
-            raise RuntimeError(error or "Codex SDK did not return a decision; check endpoint, model, and Responses API support")
+            raise RuntimeError(error or "Codex CLI did not return a decision; check endpoint, model, and Responses API support")
         return decision
     finally:
         timer.cancel()

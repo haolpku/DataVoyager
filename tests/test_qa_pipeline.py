@@ -65,6 +65,23 @@ def test_catalog_search_applies_explicit_training_license_filter(monkeypatch):
     assert report["status"] == "found"
 
 
+def test_machine_learning_discovery_excludes_benchmark_variants(monkeypatch):
+    import importlib.util
+    from dataflowwebagent.skills.ObtainerCLI import searchagent
+    rows = [
+        {"source": "huggingface", "dataset_id": "org/mmlu-machine_learning-neg", "description": "benchmark"},
+        {"source": "huggingface", "dataset_id": "org/autoeval-machine-learning", "description": "evaluation"},
+        {"source": "huggingface", "dataset_id": "org/quantum-machine-learning", "description": "quantum papers"},
+        {"source": "huggingface", "dataset_id": "org/machine-learning-fundamentals", "description": "Educational supervised learning explanations"},
+    ]
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object() if name == "huggingface_hub" else None)
+    async def search(**kwargs):
+        return rows, []
+    monkeypatch.setattr(searchagent, "_search_provider_methods", search)
+    candidates, _ = qa_pipeline._search_dataset_candidates("machine learning fundamentals for learners")
+    assert [row["dataset_id"] for row in candidates] == ["org/machine-learning-fundamentals"]
+
+
 def test_finance_and_medical_discovery_uses_only_hand_reviewed_catalog():
     from dataflowwebagent.dataset_catalog import curated_candidates
     finance, finance_report = qa_pipeline._search_dataset_candidates("金融财报问答")
@@ -101,6 +118,48 @@ def test_collection_downloads_only_user_selected_dataset_ids(tmp_path, monkeypat
     assert downloaded == ["finance/a", "finance/c"]
     assert len(rows) == 2
     assert report["selected_dataset_ids"] == ["finance/a", "finance/c"]
+
+
+def test_collection_does_not_cap_confirmed_sources_at_five(tmp_path, monkeypatch):
+    from dataflowwebagent.skills.ObtainerCLI import download
+    selected = [{"source": "huggingface", "dataset_id": f"edu/source-{index}"} for index in range(6)]
+    downloaded, limits = [], []
+    def download_manifest(manifest, **kwargs):
+        downloaded.append(json.loads(Path(manifest).read_text())["candidates"][0]["dataset_id"])
+        limits.append(kwargs["max_rows"])
+        return {"results": [{"ok": True, "records_jsonl": "unused.jsonl", "split": "train"}]}
+    monkeypatch.setattr(download, "download_manifest", download_manifest)
+    monkeypatch.setattr(qa_pipeline, "_records_from_download", lambda candidate, *args:
+                        ([{"content": {"text": candidate["dataset_id"]}}], {}))
+    rows, _ = qa_pipeline._collect_hf_records("education", tmp_path, "test", 7, tmp_path / "downloads",
+                                               selected_dataset_ids=[row["dataset_id"] for row in selected],
+                                               selected_datasets=selected)
+    assert downloaded == [row["dataset_id"] for row in selected]
+    assert limits == [7] * 6
+    assert len(rows) == 6
+
+
+def test_catalog_size_marks_small_datasets_as_quick_trials():
+    assert qa_pipeline._candidate_size_bytes({"size": "2048"}) == 2048
+    assert qa_pipeline._candidate_size_bytes({"size": "unknown"}) is None
+    small = {"dataset_id": "ml/a", "description": "machine learning education", "size": 1024}
+    large = {"dataset_id": "ml/b", "description": "machine learning education", "size": 1024 ** 3}
+    assert qa_pipeline._candidate_sort_key(small, "machine_learning") < qa_pipeline._candidate_sort_key(large, "machine_learning")
+
+
+def test_confirmed_selection_is_not_searched_again(tmp_path, monkeypatch):
+    from dataflowwebagent.skills.ObtainerCLI import download
+    selected = [{"source": "huggingface", "dataset_id": "edu/ml-basics", "license": "mit"}]
+    monkeypatch.setattr(qa_pipeline, "_search_dataset_candidates", lambda request: pytest.fail("selection must be frozen"))
+    def download_manifest(manifest, **kwargs):
+        candidate = json.loads(Path(manifest).read_text())["candidates"][0]
+        assert candidate["dataset_id"] == "edu/ml-basics"
+        return {"results": [{"ok": True, "records_jsonl": "unused.jsonl", "split": "train"}]}
+    monkeypatch.setattr(download, "download_manifest", download_manifest)
+    monkeypatch.setattr(qa_pipeline, "_records_from_download", lambda *args: ([{"content": {"text": "source"}}], {}))
+    rows, report = qa_pipeline._collect_hf_records("ML basics", tmp_path, "test", 5, tmp_path / "downloads",
+                                                   selected_dataset_ids=["edu/ml-basics"], selected_datasets=selected)
+    assert len(rows) == 1 and report["selection_frozen"] is True
 
 
 def test_export_validates_pairs_deduplicates_and_separates_sources(tmp_path):
@@ -215,8 +274,8 @@ def test_no_dataset_match_returns_shortfall_without_web_fallback(tmp_path, monke
                         lambda *args, **kwargs: pytest.fail("no web campaign should run without dataset rows"))
     result = qa_pipeline.run_qa("Create 5 QA pairs about Python", warehouse=warehouse,
                                 run=tmp_path / "run", output=tmp_path / "qa.jsonl", target_rows=5)
-    assert result["status"] == "needs_confirmation"
-    assert result["stop_reason"] == "no_suitable_dataset"
+    assert result["status"] == "failed"
+    assert result["stop_reason"] == "no_results"
     assert result["rows"] == 0 and not (tmp_path / "qa.jsonl").exists()
 
 

@@ -84,13 +84,18 @@ def _source_domain(request: str) -> str:
         return "finance"
     if any(term in lowered for term in ("医疗", "医学", "medical", "healthcare", "health", "临床", "高血压", "糖尿病")):
         return "medical"
+    if any(term in lowered for term in ("机器学习", "machine learning", "machine-learning", "监督学习", "supervised learning", "过拟合", "overfitting")):
+        return "machine_learning"
     return ""
 
 
 def _dataset_candidate_score(candidate: dict, domain: str) -> int:
     identity = " ".join(str(candidate.get(key) or "") for key in ("dataset_id", "title", "description"))
     tags = " ".join(str(tag) for tag in candidate.get("tags", []))
-    haystack = (identity + " " + tags).casefold()
+    # Dataset IDs commonly use underscores (``mmlu_machine_learning``),
+    # while request/domain terms use spaces.  Normalize both separators before
+    # lexical ranking so relevant Hub entries are not silently dropped.
+    haystack = (identity + " " + tags).casefold().replace("_", " ")
     if any(term in haystack for term in ("fineweb", "commoncrawl", "common-crawl", "cc-main", "redpajama", "the_pile", "oscar")):
         return -100
     if domain == "finance":
@@ -102,14 +107,65 @@ def _dataset_candidate_score(candidate: dict, domain: str) -> int:
         terms = {"hypertension": 10, "medquad": 9, "chinese-medical": 10, "medical-qa": 9,
                  "medical question answering": 8, "health education": 8, "medical": 5,
                  "healthcare": 4, "clinical": 3, "medicine": 3, "health": 2}
+    elif domain == "machine_learning":
+        # A mention of one technique (for example, supervised learning in a
+        # manufacturing dataset) is not enough to make it introductory ML
+        # source material.  Require an explicit ML-domain signal first.
+        if not any(term in haystack for term in ("machine learning", "machine-learning")):
+            return 0
+        terms = {"machine learning question answering": 9,
+                 "machine learning qa": 8, "machine learning fundamentals": 8,
+                 "machine learning education": 8, "machine learning tutorial": 7,
+                 "machine learning": 6, "supervised learning": 3,
+                 "overfitting": 3, "evaluation metrics": 3, "train test": 2}
     else:
         return 0
     return max((score for term, score in terms.items() if term in haystack), default=0)
 
 
 def _license_tag(candidate: dict) -> str:
-    return next((tag.split(":", 1)[1] for tag in candidate.get("tags", [])
-                 if isinstance(tag, str) and tag.startswith("license:")), "unknown")
+    tagged = next((tag.split(":", 1)[1] for tag in candidate.get("tags", [])
+                   if isinstance(tag, str) and tag.startswith("license:")), None)
+    return tagged or str(candidate.get("license") or "unknown")
+
+
+def _candidate_size_bytes(candidate: dict) -> int | None:
+    """Return a catalog-reported repository size when it is a usable byte count."""
+    value = candidate.get("size")
+    if isinstance(value, bool):
+        return None
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return None
+    return size if size > 0 else None
+
+
+def _candidate_sort_key(candidate: dict, domain: str) -> tuple:
+    size = _candidate_size_bytes(candidate)
+    # Among equally relevant entries, small known repositories are safest for
+    # the initially selected front-end quick trial.
+    bucket = 0 if size is not None and size <= 32 * 1024 * 1024 else 1 if size is not None else 2
+    return (-_dataset_candidate_score(candidate, domain), bucket,
+            size if size is not None else float("inf"), -int(candidate.get("downloads") or 0))
+
+
+def _is_catalog_candidate_eligible(candidate: dict, domain: str, request: str) -> bool:
+    """Reject benchmark variants that cannot serve as educational source corpora."""
+    text = " ".join(str(candidate.get(key) or "") for key in ("dataset_id", "title", "description")).casefold()
+    dataset_id = str(candidate.get("dataset_id") or "").casefold()
+    if any(token in text for token in ("autoeval", "hendrycks_test", "mmlu", "-neg", "_neg", "-prepend", "_prepend")):
+        return False
+    if domain == "machine_learning" and "quantum" in text and "quantum" not in request.casefold():
+        return False
+    if domain == "machine_learning" and any(token in text for token in (
+        "synthetic", "adversarial", "homework", "implementation", "vqa", "industrycorpus",
+    )):
+        return False
+    # Dataset forks with no card text are not actionable educational sources.
+    if not str(candidate.get("description") or "").strip() and any(token in dataset_id for token in ("eval", "test", "benchmark")):
+        return False
+    return True
 
 
 def _requires_clear_license(request: str) -> bool:
@@ -137,7 +193,9 @@ def _search_dataset_candidates(request: str) -> tuple[list[dict], dict]:
     from dataflowwebagent.skills.ObtainerCLI.searchagent import (
         _normalize_keywords, _relax_hf_keywords, _search_provider_methods,
     )
-    hf_available = bool(importlib.util.find_spec("datasets") and importlib.util.find_spec("huggingface_hub"))
+    # Catalog discovery and snapshot download use huggingface_hub.  ``datasets``
+    # is optional configuration-inspection support, not a discovery prerequisite.
+    hf_available = bool(importlib.util.find_spec("huggingface_hub"))
     kaggle_available = bool(importlib.util.find_spec("kaggle"))
     if not hf_available and not kaggle_available:
         return [], {"status": "unavailable", "records_loaded": 0,
@@ -152,19 +210,29 @@ def _search_dataset_candidates(request: str) -> tuple[list[dict], dict]:
         domain_terms = ["Chinese medical QA", "MedQuAD", "hypertension question answering",
                         "medical health education QA", "medical question answering",
                         "health education question answering"]
+    elif domain == "machine_learning":
+        domain_terms = ["machine learning", "machine learning question answering", "machine learning fundamentals",
+                        "machine learning education", "machine learning tutorial",
+                        "supervised learning machine learning"]
     else:
         domain_terms = []
     search_terms = list(dict.fromkeys([*domain_terms, *keywords, *_relax_hf_keywords(keywords)]))[:10]
     methods = ["huggingface"] if hf_available else []
     if kaggle_available:
         methods.append("kaggle")
+    # Hugging Face ranks benchmark forks very highly for "machine learning".
+    # The first eight entries are often only MMLU/autoeval variants, while
+    # educational QA datasets appear slightly later in the same result set.
+    # Search a wider bounded pool before applying quality filters.
+    catalog_limit = 50 if domain == "machine_learning" else 8
     found, errors = asyncio.run(_search_provider_methods(
         methods=methods, hf_keywords=search_terms, kaggle_keywords=search_terms,
-        max_results_per_source=8, kaggle_username="", kaggle_key=""))
+        max_results_per_source=catalog_limit, kaggle_username="", kaggle_key=""))
     candidates = [row for row in found if row.get("source") in {"huggingface", "kaggle"} and row.get("dataset_id")]
+    candidates = [row for row in candidates if _is_catalog_candidate_eligible(row, domain, request)]
     if domain:
         candidates = [row for row in candidates if _dataset_candidate_score(row, domain) > 0]
-        candidates.sort(key=lambda row: (_dataset_candidate_score(row, domain), row.get("downloads") or 0), reverse=True)
+        candidates.sort(key=lambda row: _candidate_sort_key(row, domain))
     if _requires_clear_license(request):
         candidates = [row for row in candidates if _license_is_clear(row)]
     results = []
@@ -174,7 +242,12 @@ def _search_dataset_candidates(request: str) -> tuple[list[dict], dict]:
         if key in seen:
             continue
         seen.add(key)
-        results.append(row)
+        result = dict(row)
+        size = _candidate_size_bytes(result)
+        if size is not None:
+            result["size"] = size
+            result["quick_trial"] = size <= 32 * 1024 * 1024
+        results.append(result)
     return results[:24], {"status": "found" if results else ("unavailable" if errors else "no_results"),
                           "queries": search_terms, "datasets_found": len(results), "search_errors": errors}
 
@@ -230,9 +303,16 @@ def _records_from_download(candidate: dict, completed: dict, limit: int, request
 
 
 def _collect_hf_records(request: str, warehouse: Path, model: str, limit: int,
-                        download_root: Path, selected_dataset_ids: list[str] | None = None) -> tuple[list[dict], dict]:
+                        download_root: Path, selected_dataset_ids: list[str] | None = None,
+                        selected_datasets: list[dict] | None = None) -> tuple[list[dict], dict]:
     """Use Obtainer's dataset-site search and bounded downloader for QA sources."""
-    candidates, search_report = _search_dataset_candidates(request)
+    if selected_datasets is not None:
+        candidates = [dict(row) for row in selected_datasets if isinstance(row, dict) and row.get("dataset_id")]
+        search_report = {"status": "found" if candidates else "no_results", "queries": [],
+                         "datasets_found": len(candidates), "search_errors": [],
+                         "catalog": "confirmed_selection", "selection_frozen": True}
+    else:
+        candidates, search_report = _search_dataset_candidates(request)
     search_terms = search_report.get("queries", [])
     errors = search_report.get("search_errors", [])
     if selected_dataset_ids:
@@ -276,8 +356,10 @@ def _collect_hf_records(request: str, warehouse: Path, model: str, limit: int,
     downloader = __import__("dataflowwebagent.skills.ObtainerCLI.download", fromlist=["download_manifest"])
     download_root = Path(download_root)
     download_attempts, records, accepted_datasets = [], [], []
-    per_dataset_limit = max(1, limit // min(len(ordered), 5)) if selected_dataset_ids else limit
-    for attempt, candidate in enumerate(ordered[:5], 1):
+    # The UI labels this as a per-source cap.  A confirmed selection must not
+    # be truncated or divided by an arbitrary five-source ceiling.
+    per_dataset_limit = limit
+    for attempt, candidate in enumerate(ordered, 1):
         attempt_root = download_root / "attempts" / str(attempt)
         manifest_path = attempt_root / "candidates.json"
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -441,7 +523,8 @@ def run_qa(request: str, *, warehouse: Path, run: Path, output: Path,
            max_pages: int = 20, focus: list[str] | None = None,
            target_rows: int | None = None, max_rounds: int = 5,
            base_warehouse: Path | None = None, stop_after: str = "qa",
-           selected_dataset_ids: list[str] | None = None) -> dict:
+           selected_dataset_ids: list[str] | None = None,
+           selected_datasets: list[dict] | None = None) -> dict:
     # Keep the CLI/API compatible with earlier runs while exposing clearer stage names.
     stop_after = {"raw": "collect", "corpus": "clean"}.get(stop_after, stop_after)
     if stop_after not in {"collect", "merge", "clean", "qa"}:
@@ -488,10 +571,10 @@ def run_qa(request: str, *, warehouse: Path, run: Path, output: Path,
         with UsageMeter(warehouse, run) as meter:
             if stop_after != "qa":
                 return _execute_sources(runner, request, warehouse, run, config, meter, stop_after, max_pages,
-                                        selected_dataset_ids=selected_dataset_ids)
+                                        selected_dataset_ids=selected_dataset_ids, selected_datasets=selected_datasets)
             return _execute_qa(runner, request, warehouse, run, output, config, meter,
                                target_rows=target_rows, max_rounds=max_rounds, max_pages=max_pages,
-                               selected_dataset_ids=selected_dataset_ids)
+                               selected_dataset_ids=selected_dataset_ids, selected_datasets=selected_datasets)
     finally:
         runner.close()
 
@@ -514,7 +597,7 @@ def _copy_previous(base: Path, warehouse: Path, config):
 
 
 def _execute_qa(runner, request, warehouse, run, output, config, meter, *,
-                target_rows=None, max_rounds=5, max_pages=20, selected_dataset_ids=None) -> dict:
+                target_rows=None, max_rounds=5, max_pages=20, selected_dataset_ids=None, selected_datasets=None) -> dict:
     progress = QAProgress(warehouse, run, config, meter)
     progress.quantity = {"target_rows": target_rows, "generated_rows": 0, "round": 0}
     try:
@@ -526,7 +609,7 @@ def _execute_qa(runner, request, warehouse, run, output, config, meter, *,
         try:
             source_records, source_report = _collect_hf_records(
                 request, warehouse, config.model, source_row_limit, run / "dataset-source",
-                selected_dataset_ids=selected_dataset_ids)
+                selected_dataset_ids=selected_dataset_ids, selected_datasets=selected_datasets)
         except Exception as exc:
             source_records = []
             source_report = {"status": "unavailable", "records_loaded": 0,
@@ -536,6 +619,21 @@ def _execute_qa(runner, request, warehouse, run, output, config, meter, *,
             json.dumps(progress.source_acquisition, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         progress.stage_override = "processing dataset records"
         progress.write()
+        if not source_records:
+            error = str(source_report.get("error") or "No usable source records were downloaded.")
+            snapshot = progress.stop("failed")
+            result = {"status": "failed", "error": error, "rows": 0, "output": None, "sources": None,
+                      "target_rows": target_rows, "target_met": False, "shortfall": target_rows or 0,
+                      "stop_reason": source_report.get("status") or "download_failed",
+                      "source_row_limit": source_row_limit, "source_rows_loaded": 0,
+                      "source_acquisition": progress.source_acquisition, "usage": snapshot["usage"],
+                      "elapsed_seconds": snapshot["elapsed_seconds"], "request": request, "campaign_id": None,
+                      "rounds": [], "warehouse": str(warehouse), "run": str(run)}
+            from .qa_artifacts import build_merged_stage, export_stages
+            build_merged_stage(warehouse)
+            result["artifacts"] = export_stages(warehouse, run / "artifacts")
+            (run / "report.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            return result
         store = DataStore.open(warehouse)
         try:
             rows, sources, _ = qa_records(store, config.l3_dataset)
@@ -602,7 +700,7 @@ def _execute_qa(runner, request, warehouse, run, output, config, meter, *,
 
 
 def _execute_sources(runner, request, warehouse, run, config, meter, stop_after, source_row_limit=100,
-                     selected_dataset_ids=None):
+                     selected_dataset_ids=None, selected_datasets=None):
     from .qa_artifacts import build_merged_stage, materialize_merged_dataset, export_stages
     progress = QAProgress(warehouse, run, config, meter)
     progress.start()
@@ -614,7 +712,7 @@ def _execute_sources(runner, request, warehouse, run, config, meter, stop_after,
         try:
             hf_records, hf_report = _collect_hf_records(request, warehouse, config.model,
                                                         limit, run / "hf-source",
-                                                        selected_dataset_ids=selected_dataset_ids)
+                                                        selected_dataset_ids=selected_dataset_ids, selected_datasets=selected_datasets)
         except Exception as exc:
             hf_records = []
             hf_report = {"status": "unavailable", "records_loaded": 0,

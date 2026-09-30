@@ -6,9 +6,12 @@ import re
 import csv
 import io
 import zipfile
+import time
 from itertools import islice
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlencode
+from urllib.request import urlopen
 
 from dataflowwebagent.utils.hf_endpoints import (
     DEFAULT_HF_ENDPOINTS,
@@ -23,9 +26,14 @@ from .models import canonical_json, utc_now
 
 MAX_ROWS_PER_DATASET = 100_000
 MAX_BYTES_PER_DATASET = 2 * 1024 * 1024 * 1024
+# A source-row sample never needs a multi-gigabyte Hub artifact.  Avoid Xet
+# reconstruction for huge monolithic files; it can otherwise stall a whole
+# selected-source batch before the next source is tried.
+MAX_DIRECT_HUB_FILE_BYTES = 32 * 1024 * 1024
+_datasets_runtime_usable: bool | None = None
 
 
-def _ensure_hf_mirror_env() -> None:
+def _ensure_hf_mirror_env(*, cache_root: Path | None = None) -> None:
     endpoint = (
         os.environ.get("HF_ENDPOINT")
         or os.environ.get("HF_HUB_ENDPOINT")
@@ -34,6 +42,15 @@ def _ensure_hf_mirror_env() -> None:
     os.environ.setdefault("HF_ENDPOINT", endpoint)
     os.environ.setdefault("HF_HUB_ENDPOINT", endpoint)
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+    if cache_root is not None:
+        # The process may be launched by Task Scheduler, whose profile cache
+        # is not necessarily writable.  Keep Hub cache writes in this run's
+        # workspace instead of silently failing every direct-file fallback.
+        hub_cache = cache_root / "hub"
+        hub_cache.mkdir(parents=True, exist_ok=True)
+        os.environ["HF_HOME"] = str(cache_root)
+        os.environ["HUGGINGFACE_HUB_CACHE"] = str(hub_cache)
 
 
 def _load_hf_dataset(dataset_id: str, *, split: str, streaming: bool) -> Any:
@@ -46,6 +63,12 @@ def _load_hf_dataset(dataset_id: str, *, split: str, streaming: bool) -> Any:
     before moving on.  Only when every endpoint fails is a combined error
     raised, so one dead mirror cannot sink the whole download run.
     """
+    global _datasets_runtime_usable
+    if _datasets_runtime_usable is False:
+        raise ObtainerCliError(
+            "HF_DATASETS_RUNTIME_UNAVAILABLE",
+            "The optional datasets runtime failed to import earlier in this process",
+        )
     errors: list[str] = []
     for endpoint in _hf_endpoint_chain():
         if not _endpoint_reachable(endpoint):
@@ -53,7 +76,18 @@ def _load_hf_dataset(dataset_id: str, *, split: str, streaming: bool) -> Any:
             continue
         _apply_hf_endpoint(endpoint)
         try:
-            return _load_hf_dataset_once(dataset_id, split=split, streaming=streaming)
+            result = _load_hf_dataset_once(dataset_id, split=split, streaming=streaming)
+            _datasets_runtime_usable = True
+            return result
+        except (ImportError, AttributeError) as exc:
+            # This environment has a broken NumPy/datasets binary import.
+            # Retrying it against every mirror only emits noise and delays the
+            # bounded Hub/Dataset-Server fallbacks below.
+            _datasets_runtime_usable = False
+            raise ObtainerCliError(
+                "HF_DATASETS_RUNTIME_UNAVAILABLE",
+                f"datasets could not import: {type(exc).__name__}: {exc}",
+            ) from exc
         except Exception as exc:
             errors.append(f"{endpoint}: {type(exc).__name__}: {str(exc)[:300]}")
             continue
@@ -85,6 +119,91 @@ def _load_hf_dataset_once(dataset_id: str, *, split: str, streaming: bool) -> An
         if not configs:
             raise first_error
         return load_dataset(dataset_id, configs[0], **kwargs)
+
+
+def _load_hf_dataset_server_rows(dataset_id: str, *, split: str, limit: int) -> list[dict[str, Any]]:
+    """Read a small public sample without importing the optional datasets stack.
+
+    The Dataset Server exposes normalized rows for viewer-enabled Hub datasets.
+    This is a bounded fallback for environments where ``datasets`` cannot load
+    its binary dependencies; it is not used for bulk download.
+    """
+    query = urlencode({"dataset": dataset_id, "config": "default", "split": split,
+                       "offset": 0, "length": min(max(1, limit), 100)})
+    url = "https://datasets-server.huggingface.co/rows?" + query
+    error = None
+    for attempt in range(2):
+        try:
+            with urlopen(url, timeout=10) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            break
+        except Exception as exc:
+            error = exc
+            if attempt < 1:
+                time.sleep(attempt + 1)
+    else:
+        raise ObtainerCliError("HF_DATASET_SERVER_ROWS_FAILED",
+                               f"Dataset Server could not read {dataset_id!r}: {error}") from error
+    rows = payload.get("rows") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        raise ObtainerCliError("HF_DATASET_SERVER_ROWS_FAILED",
+                               f"Dataset Server returned no rows for {dataset_id!r}")
+    return [dict(item.get("row") or {}) for item in rows if isinstance(item, dict) and isinstance(item.get("row"), dict)]
+
+
+def _load_hf_hub_file_rows(dataset_id: str, *, split: str, limit: int) -> list[dict[str, Any]]:
+    """Read a bounded structured file directly from the Hub as a datasets-free fallback."""
+    try:
+        from huggingface_hub import HfApi, hf_hub_download
+        api = HfApi()
+        files = api.list_repo_files(dataset_id, repo_type="dataset")
+    except Exception as exc:
+        raise ObtainerCliError("HF_HUB_FILE_LIST_FAILED", f"Could not list files for {dataset_id!r}: {exc}") from exc
+    extensions = (".jsonl", ".ndjson", ".json", ".csv", ".tsv")
+    named = [name for name in files if Path(name).suffix.lower() in extensions]
+    preferred = next((name for name in named if Path(name).stem.casefold() == split.casefold()), None)
+    filename = preferred or next((name for name in named if split.casefold() in Path(name).stem.casefold()), None)
+    filename = filename or (named[0] if named else None)
+    if not filename:
+        raise ObtainerCliError("HF_HUB_STRUCTURED_FILE_MISSING", f"No JSON/CSV source file for {dataset_id!r}")
+    try:
+        info = api.get_paths_info(dataset_id, filename, repo_type="dataset", expand=True)
+        size = next((getattr(entry, "size", None) for entry in info if getattr(entry, "path", None) == filename), None)
+        if isinstance(size, int) and size > MAX_DIRECT_HUB_FILE_BYTES:
+            raise ObtainerCliError(
+                "HF_HUB_FILE_TOO_LARGE",
+                f"Refusing {filename!r} ({size} bytes): bounded source sampling only reads files up to {MAX_DIRECT_HUB_FILE_BYTES} bytes",
+            )
+    except ObtainerCliError:
+        raise
+    except Exception:
+        # Metadata is advisory.  If its endpoint is unavailable, retain the
+        # direct-file fallback for normally sized datasets.
+        pass
+    try:
+        path = Path(hf_hub_download(repo_id=dataset_id, repo_type="dataset", filename=filename))
+    except Exception as exc:
+        raise ObtainerCliError("HF_HUB_FILE_DOWNLOAD_FAILED", f"Could not download {filename!r}: {exc}") from exc
+    suffix = path.suffix.casefold()
+    rows: list[dict[str, Any]] = []
+    if suffix in {".jsonl", ".ndjson"}:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            for line in islice(handle, limit):
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                rows.append(item if isinstance(item, dict) else {"value": item})
+    elif suffix == ".json":
+        payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        values = payload.get("data") if isinstance(payload, dict) and isinstance(payload.get("data"), list) else payload
+        rows = [item if isinstance(item, dict) else {"value": item} for item in (values if isinstance(values, list) else [values])][:limit]
+    else:
+        with path.open(encoding="utf-8", errors="replace", newline="") as handle:
+            rows = [dict(row) for row in islice(csv.DictReader(handle, delimiter="\t" if suffix == ".tsv" else ","), limit)]
+    if not rows:
+        raise ObtainerCliError("HF_HUB_FILE_EMPTY", f"No rows found in {filename!r} for {dataset_id!r}")
+    return rows
 
 
 def _safe_name(value: str) -> str:
@@ -207,12 +326,23 @@ def _export_huggingface_jsonl(
             "candidate": item,
         }
 
-    _ensure_hf_mirror_env()
-    dataset = _load_hf_dataset(dataset_id, split=split, streaming=streaming)
-    endpoint_used = os.environ.get("HF_ENDPOINT") or ""
+    _ensure_hf_mirror_env(cache_root=output_root / ".hf_cache")
     effective_max_rows = _effective_max_rows(max_rows)
     effective_max_bytes = _effective_max_bytes(max_bytes_per_dataset)
-    selected_rows = islice(dataset, effective_max_rows)
+    endpoint_used = os.environ.get("HF_ENDPOINT") or ""
+    try:
+        dataset = _load_hf_dataset(dataset_id, split=split, streaming=streaming)
+        selected_rows = islice(dataset, effective_max_rows)
+    except ObtainerCliError:
+        # ``datasets`` may be unavailable or binary-incompatible even though
+        # the Hub and its row service are reachable.  Preserve a small usable
+        # source sample instead of rejecting every candidate.
+        try:
+            selected_rows = iter(_load_hf_hub_file_rows(dataset_id, split=split, limit=effective_max_rows))
+            endpoint_used = "huggingface_hub:file"
+        except ObtainerCliError:
+            selected_rows = iter(_load_hf_dataset_server_rows(dataset_id, split=split, limit=effective_max_rows))
+            endpoint_used = "https://datasets-server.huggingface.co/rows"
     rows_iter = (
         _normalize_row(dict(row), dataset_id=dataset_id, split=split, row_index=index)
         for index, row in enumerate(selected_rows, 1)

@@ -1,9 +1,10 @@
 const $ = id => document.getElementById(id);
-const state = {token: '', sid: null, selectedRun: null, config: {}, snapshot: null, messageKey: '', generation: 0, sourceChoiceId: null, sourceSelections: []};
+const state = {token: '', sid: null, selectedRun: null, config: {}, snapshot: null, messageKey: '', generation: 0, sourceChoiceId: null, sourceCandidateIds: [], sourceSelections: []};
 const labels = {queued:'等待执行',running:'进行中',completed:'已完成',failed:'失败',cancelled:'已停止',interrupted:'已中断',awaiting_source_selection:'等待选择来源',needs_confirmation:'数量不足 · 待确认',accepted_partial:'已接受当前数量',continued:'已创建补充版本'};
 const reasons = {dataset_exhausted:'已处理本次找到的数据集样本',no_suitable_dataset:'没有找到适合的数据集',existing_sources_exhausted:'已有资料已处理完毕'};
 const stages = {'searching / collecting sources':'正在寻找数据集来源','searching dataset catalogs':'正在搜索数据集站点','processing dataset records':'正在处理数据集样本','merging and deduplicating collected sources':'正在合并并去除重复资料','extracting text':'提取正文','checking relevance':'判断相关性','filtering sources':'筛选资料','generating QA':'生成问答','validating QA':'检查问答格式','exporting QA':'导出数据'};
 const number = n => Number(n || 0).toLocaleString('en-US');
+function datasetSize(value){const bytes=Number(value);if(!Number.isFinite(bytes)||bytes<=0)return '大小未标注';const units=['B','KB','MB','GB','TB'];let amount=bytes,index=0;while(amount>=1024&&index<units.length-1){amount/=1024;index++;}return `${amount>=10||index===0?Math.round(amount):amount.toFixed(1)} ${units[index]}`;}
 function el(tag, cls, text) {const node=document.createElement(tag);if(cls)node.className=cls;if(text!==undefined)node.textContent=text;return node;}
 function notice(message='') {$('notice').textContent=message;$('notice').hidden=!message;}
 async function api(path, data) {
@@ -53,10 +54,16 @@ function renderRun(){
   const candidates=run?.report?.selection_candidates||[];
   $('source-choice-card').hidden=run?.status!=='awaiting_source_selection';
   if(run?.status==='awaiting_source_selection'){
-    if(state.sourceChoiceId!==run.id){state.sourceChoiceId=run.id;state.sourceSelections=candidates.length?[candidates[0].dataset_id]:[];}
+    const candidateIds=candidates.map(candidate=>candidate.dataset_id).filter(Boolean);
+    // Polling redraws this panel every two seconds.  Keep the selection as
+    // state belonging to this exact discovery result instead of depending on
+    // whichever checkbox nodes happened to exist when the button was clicked.
+    if(state.sourceChoiceId!==run.id){state.sourceChoiceId=run.id;state.sourceCandidateIds=candidateIds;state.sourceSelections=candidateIds.length?[candidateIds[0]]:[];}
+    else {state.sourceCandidateIds=candidateIds;state.sourceSelections=state.sourceSelections.filter(id=>candidateIds.includes(id));}
     const cards=candidates.map((candidate,index)=>{
-      const label=el('label','source-candidate');const check=document.createElement('input');check.type='checkbox';check.className='source-pick';check.value=candidate.dataset_id;check.checked=state.sourceSelections.includes(candidate.dataset_id);check.onchange=()=>{state.sourceSelections=[...document.querySelectorAll('.source-pick:checked')].map(input=>input.value);};
+      const label=el('label','source-candidate');const check=document.createElement('input');check.type='checkbox';check.className='source-pick';check.value=candidate.dataset_id;check.checked=state.sourceSelections.includes(candidate.dataset_id);check.onchange=()=>{const id=candidate.dataset_id;state.sourceSelections=check.checked?[...new Set([...state.sourceSelections,id])]:state.sourceSelections.filter(selected=>selected!==id);};
       const body=el('span','source-candidate-body');body.append(el('strong','',candidate.title||candidate.dataset_id),el('small','',`${candidate.source==='kaggle'?'Kaggle':'Hugging Face'} · ${candidate.dataset_id} · ${candidate.language||'语言未标注'} · ${candidate.rows_estimate?number(candidate.rows_estimate)+' 条':''} · 许可：${candidate.license||'unknown'} · ${candidate.curated?'已核对数据卡':''}`),el('span','',candidate.description||'暂无数据集说明。'));
+      body.append(el('span','source-kind',`数据规模：${candidate.size_category||'未标注'} · 仓库大小：${datasetSize(candidate.size)}${candidate.quick_trial?' · 适合快速试跑':''}`));
       if(candidate.data_kind)body.append(el('span','source-kind',`数据类型：${candidate.data_kind}${candidate.schema_summary?' · 字段：'+candidate.schema_summary:''}`));
       if(candidate.curator_note)body.append(el('span','source-curator-note',candidate.curator_note));
       try{const url=new URL(candidate.url);if(['https:','http:'].includes(url.protocol)){const a=el('a','',url.hostname+' ↗');a.href=url.href;a.target='_blank';a.rel='noopener noreferrer';body.append(a);}}catch{}
@@ -112,10 +119,10 @@ function openSettings(){
   $('base-url').value=state.config.base_url || '';$('model').value=state.config.model || '';$('api-format').value=state.config.api_format || 'responses';$('api-key').value='';$('api-key').placeholder=state.config.configured?'已配置；留空保留当前 Key':'仅保存在服务进程内存中';$('settings-error').textContent='';$('settings').showModal();
 }
 $('settings-button').onclick=openSettings;$('close-settings').onclick=()=>$('settings').close();
-$('settings-form').onsubmit=async event=>{event.preventDefault();try{const config=await api('/api/config',{base_url:$('base-url').value,model:$('model').value,api_key:$('api-key').value,api_format:$('api-format').value});configView(config);$('api-key').value='';$('settings').close();notice();$('prompt').focus();}catch(error){$('settings-error').textContent=error.message;}};
+$('settings-form').onsubmit=async event=>{event.preventDefault();try{const apiKey=$('api-key').value;const config=await api('/api/config',{base_url:$('base-url').value,model:$('model').value,api_key:apiKey,api_format:$('api-format').value});if(apiKey)sessionStorage.setItem('datavoyager.api_key',apiKey);configView(config);$('api-key').value='';$('settings').close();notice();$('prompt').focus();}catch(error){$('settings-error').textContent=error.message;}};
 $('new-chat').onclick=()=>createSession().catch(error=>notice(error.message));
 $('versions').onchange=()=>{state.selectedRun=$('versions').value;renderRun();};
-$('composer').onsubmit=async event=>{event.preventDefault();const message=$('prompt').value.trim();if(!message||state.snapshot?.busy)return;if(!state.config.configured){openSettings();return;}$('send').disabled=true;try{if(!state.sid)await createSession();await api(`/api/sessions/${state.sid}/messages`,{message,stop_after:$('stop-after').value});$('prompt').value='';notice();await refresh();}catch(error){notice(error.message);$('send').disabled=false;}};
+$('composer').onsubmit=async event=>{event.preventDefault();const message=$('prompt').value.trim(),stopAfter=$('stop-after').value;if(!message||state.snapshot?.busy)return;if(!state.config.configured&&stopAfter!=='discover'){openSettings();return;}$('send').disabled=true;try{if(!state.sid)await createSession();await api(`/api/sessions/${state.sid}/messages`,{message,stop_after:stopAfter});$('prompt').value='';notice();await refresh();}catch(error){notice(error.message);$('send').disabled=false;}};
 $('prompt').onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();$('composer').requestSubmit();}};
 for(const button of document.querySelectorAll('[data-prompt]'))button.onclick=()=>{$('prompt').value=button.dataset.prompt;$('prompt').focus();};
 $('cancel-run').onclick=async()=>{try{await api(`/api/sessions/${state.sid}/runs/${state.selectedRun}/cancel`,{});await refresh();}catch(error){notice(error.message);}};
@@ -124,7 +131,7 @@ $('confirm-plan').onclick=()=>confirmPlan('start');$('dismiss-plan').onclick=()=
 async function resolveShortfall(action){try{await api(`/api/sessions/${state.sid}/runs/${state.selectedRun}/resolve`,{action,max_source_rows:Number($('extra-pages').value)});notice();await refresh();}catch(error){notice(error.message);}}
 $('accept-shortfall').onclick=()=>resolveShortfall('accept');$('extend-shortfall').onclick=()=>resolveShortfall('extend');
 $('selected-stage').onchange=()=>{$('selection-target-wrap').hidden=$('selected-stage').value!=='qa';};
-$('select-sources').onclick=async()=>{try{const dataset_ids=[...document.querySelectorAll('.source-pick:checked')].map(input=>input.value);if(!dataset_ids.length)throw new Error('至少选择一个数据集来源');await api(`/api/sessions/${state.sid}/runs/${state.selectedRun}/select`,{dataset_ids,stop_after:$('selected-stage').value,target_rows:Number($('selection-target').value),max_source_rows:Number($('selection-budget').value)});notice();await refresh();}catch(error){notice(error.message);}};
+$('select-sources').onclick=async()=>{try{const run=state.snapshot?.runs.find(item=>item.id===state.selectedRun);const allowed=new Set(run?.report?.selection_candidates?.map(candidate=>candidate.dataset_id).filter(Boolean)||[]);const dataset_ids=state.sourceSelections.filter(id=>allowed.has(id));if(!dataset_ids.length)throw new Error('至少选择一个数据集来源');await api(`/api/sessions/${state.sid}/runs/${run.id}/select`,{dataset_ids,stop_after:$('selected-stage').value,target_rows:Number($('selection-target').value),max_source_rows:Number($('selection-budget').value)});notice();await refresh();}catch(error){notice(error.message);}};
 $('adjust-scope').onclick=()=>{$('prompt').value='当前题数不足，我想调整主题或来源范围：';$('prompt').focus();};
 async function poll(){await refresh();setTimeout(poll,2000);}
-(async()=>{try{const data=await api('/api/bootstrap');state.token=data.token;configView(data.config);if(data.sessions.length)await selectSession(data.sessions[0].id);else await createSession();setTimeout(poll,2000);}catch(error){notice('无法连接工作空间：'+error.message);}})();
+(async()=>{try{const data=await api('/api/bootstrap');state.token=data.token;configView(data.config);const savedKey=sessionStorage.getItem('datavoyager.api_key');if(!data.config.configured&&savedKey&&data.config.base_url&&data.config.model){try{configView(await api('/api/config',{base_url:data.config.base_url,model:data.config.model,api_key:savedKey,api_format:data.config.api_format||'responses'}));}catch(error){sessionStorage.removeItem('datavoyager.api_key');notice('模型配置未恢复：'+error.message);}}if(data.sessions.length)await selectSession(data.sessions[0].id);else await createSession();setTimeout(poll,2000);}catch(error){notice('无法连接工作空间：'+error.message);}})();
