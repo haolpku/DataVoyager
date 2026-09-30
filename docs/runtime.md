@@ -1,16 +1,16 @@
 # Advanced runtime setup and current limits
 
 For the homepage's `build --output` workflow, follow the [QA quickstart](quickstart.md).
-That path uses Python, HTTP extraction, and built-in processing operators. It does
+That path searches dataset catalogs and uses built-in evidence-processing operators. It does
 not invoke the outer Codex worker or require the DataFlow extra. The sections below
-cover the broader acquisition engine and optional integrations.
+cover the separate, advanced acquisition engine and optional integrations.
 
 ## Installation profiles
 
 | Profile | Required components |
 |---|---|
 | Chat workspace (`chat`) | Source checkout, Python 3.10+, built Node.js SDK runner, Responses-compatible model API |
-| Prompt → QA (`build --output`) | Python 3.10+, model API with JSON output, network |
+| Prompt → QA (`build --output`) | Python 3.10+, model API with JSON output, network; `.[search]` enables Hugging Face dataset search |
 | CLI dry-run / offline demo | Python 3.10+, base Python dependencies |
 | Offline tests / package build | `pip install -e '.[dev]'` |
 | Hosted-dataset search | `.[search]`, configured model, network |
@@ -25,8 +25,8 @@ Do not advertise the wheel as a self-contained full-runtime distribution.
 
 Configuration lives in `configs/dataflowwebagent.yaml` and the packaged fallback.
 Supply `DATAFLOWWEBAGENT_MODEL`, `DATAFLOWWEBAGENT_BASE_URL`, and
-`DATAFLOWWEBAGENT_API_KEY` in the environment. Tavily and Kaggle are optional
-integrations with their own environment variables. No credentials are bundled.
+`DATAFLOWWEBAGENT_API_KEY` in the environment. Kaggle is an optional dataset-catalog integration for the conversational QA workflow.
+Tavily remains available to the separate advanced acquisition engine. No credentials are bundled.
 
 Managed model registration uses `env:` references. For nonstandard providers, a
 process environment variable is generated and inherited by the worker; acquisition
@@ -80,8 +80,8 @@ file counts and selected fields, not a new online run or independent quality aud
 
 ## Advanced acquisition commands
 
-Without `--output`, `build` uses the outer acquisition worker to discover hosted
-datasets and web resources. This route needs the Node runner and optional integrations
+Without `--output`, `build` uses the legacy advanced acquisition worker to discover hosted
+datasets and other resources. This route needs the Node runner and optional integrations
 above; it does not automatically produce a single QA training file.
 
 ```bash

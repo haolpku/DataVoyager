@@ -187,9 +187,11 @@ class Workspace:
             state["runs"] = [self._run_view(sid, run) for run in state["runs"]]
             return state
 
-    def send(self, sid, message):
+    def send(self, sid, message, stop_after="qa"):
         if not isinstance(message, str) or not message.strip() or len(message) > 12000:
             raise ValueError("请输入 1–12000 字的需求")
+        if stop_after not in {"discover", "collect", "merge", "clean", "qa"}:
+            raise ValueError("未知的数据处理阶段")
         with self.lock:
             state = self._state(sid)
             if state["busy"]:
@@ -201,6 +203,7 @@ class Workspace:
             state["busy"] = True
             state.pop("pending_plan", None)  # A changed requirement invalidates the old confirmation.
             self._message(state, "user", message.strip())
+            state["messages"][-1]["stop_after"] = stop_after
             if state["title"] == "新数据集":
                 state["title"] = message.strip()[:32]
             config = dict(self.config)
@@ -247,6 +250,8 @@ class Workspace:
             snapshot = self.snapshot(sid)
             # Limit context; sampled source text is explicitly untrusted data.
             context = {"thread_id": snapshot["thread_id"], "messages": snapshot["messages"][-16:],
+                       "requested_stop_after": next((m.get("stop_after", "qa") for m in reversed(snapshot["messages"])
+                                                      if m.get("role") == "user"), "qa"),
                        "pending_plan": snapshot.get("pending_plan"),
                        "runs": [{k: r.get(k) for k in ("id", "action", "request", "status", "progress", "samples", "report", "target_rows")} for r in snapshot["runs"][-6:]]}
             decision = self.agent(context, config, self.session_dir(sid), emit)
@@ -256,6 +261,8 @@ class Workspace:
                 if action not in {"reply", "build", "revise", "extend"} or not isinstance(decision.get("reply"), str):
                     raise ValueError("主 agent 返回了无效动作，请重试")
                 if action != "reply":
+                    if action == "build":
+                        decision["stop_after"] = context["requested_stop_after"]
                     self._launch(state, decision, config)
                 if not state.get("pending_plan"):
                     self._message(state, "assistant", decision["reply"][:16000])
@@ -277,13 +284,13 @@ class Workspace:
         if any(r["status"] in {"running", "queued"} for r in state["runs"]):
             raise ValueError("已有采集任务正在运行；请先停止，或等它结束后创建新版本")
         request = decision.get("request")
-        pages = decision.get("max_pages")
+        pages = decision.get("max_source_rows", decision.get("max_pages"))
         if not isinstance(request, str) or not request.strip() or len(request) > 16000:
             raise ValueError("Dataset request is empty or too long")
         if not isinstance(pages, int) or isinstance(pages, bool) or not 1 <= pages <= 1000:
-            raise ValueError("Page budget must be 1–1000")
-        stop_after = decision.get("stop_after", "qa")
-        if stop_after not in {"raw", "corpus", "qa"}:
+            raise ValueError("Dataset source row limit must be 1–1000")
+        stop_after = {"raw": "collect", "corpus": "clean"}.get(decision.get("stop_after", "qa"), decision.get("stop_after", "qa"))
+        if stop_after not in {"discover", "collect", "merge", "clean", "qa"}:
             raise ValueError("Unknown output stage")
         if decision["action"] != "build" and stop_after != "qa":
             raise ValueError("仅新建采集任务支持选择结束阶段")
@@ -311,26 +318,65 @@ class Workspace:
                     else pages * MAX_QA_PER_DOCUMENT + (view["report"].get("rows", 0) if base else 0))
         if stop_after != "qa":
             target = None
-        if target and target > capacity and not confirmed:
+        if stop_after != "discover" and target and target > capacity and not confirmed:
             state["pending_plan"] = {"id": uuid.uuid4().hex[:16], "decision": {**decision, "request": request, "target_rows": target},
-                                     "target_rows": target, "capacity_upper_bound": capacity, "max_pages": pages}
-            basis = "已有资料" if decision["action"] == "revise" else "本次采集预算"
+                                     "target_rows": target, "capacity_upper_bound": capacity,
+                                     "max_source_rows": pages, "max_pages": pages}
+            basis = "已有资料" if decision["action"] == "revise" else "本次数据集样本上限"
             self._message(state, "system", f"目标是 {target} 条 QA。按当前每份资料最多生成六条候选的流程，{basis}最多支持 {capacity} 条，筛选后可能更少。请在确认卡片中调整或确认尝试；也可以在对话中修改需求。尚未开始数据任务。")
             self._save(state)
             return
         state.pop("pending_plan", None)
         rid = uuid.uuid4().hex[:16]
         root = self.session_dir(state["id"]) / "versions" / rid
-        job = {"action": decision["action"], "request": request, "max_pages": pages, "target_rows": target, "stop_after": stop_after}
+        job = {"action": decision["action"], "request": request, "max_source_rows": pages,
+               "max_pages": pages, "target_rows": target, "stop_after": stop_after}
+        if decision.get("selected_dataset_ids"):
+            job["selected_dataset_ids"] = decision["selected_dataset_ids"]
         if base:
             job["base_warehouse"] = str(root.parent / base["id"] / "warehouse")
         write_json(root / "job.json", job)
         run = {"id": rid, "version": len(state["runs"]) + 1, "action": decision["action"],
-               "request": request, "max_pages": pages, "target_rows": target, "stop_after": stop_after, "base_run_id": base["id"] if base else None,
+               "request": request, "max_source_rows": pages, "max_pages": pages,
+               "target_rows": target, "stop_after": stop_after, "base_run_id": base["id"] if base else None,
                "status": "queued", "created_at": time.time()}
         state["runs"].append(run)
         self._save(state)
         threading.Thread(target=self._work, args=(state["id"], rid, config), daemon=True).start()
+
+    def select_sources(self, sid, rid, data):
+        with self.lock:
+            state = self._state(sid)
+            discovery = next((r for r in state["runs"] if r["id"] == identifier(rid)), None)
+            if not discovery or discovery["status"] != "awaiting_source_selection":
+                raise ValueError("这个版本没有待选择的数据集来源")
+            if any(r["status"] in {"running", "queued"} for r in state["runs"]):
+                raise ValueError("已有数据任务正在运行")
+            root = self.session_dir(sid) / "versions" / rid
+            report = read_json(root / "run" / "report.json")
+            candidates = report.get("selection_candidates") or []
+            allowed = {row.get("dataset_id") for row in candidates}
+            selected = data.get("dataset_ids")
+            if not isinstance(selected, list) or not 1 <= len(selected) <= 5 or any(item not in allowed for item in selected):
+                raise ValueError("请选择 1–5 个当前列表中的数据集")
+            if len(set(selected)) != len(selected):
+                raise ValueError("数据集不能重复选择")
+            stage = data.get("stop_after", "qa")
+            if stage not in {"collect", "merge", "clean", "qa"}:
+                raise ValueError("请选择有效的后续处理阶段")
+            target = data.get("target_rows")
+            if stage == "qa" and (type(target) is not int or not 1 <= target <= 10000):
+                raise ValueError("请填写 1–10000 的 QA 目标数量")
+            pages = data.get("max_source_rows", discovery.get("max_source_rows", 50))
+            if type(pages) is not int or not 1 <= pages <= 1000:
+                raise ValueError("来源样本上限需为 1–1000")
+            decision = {"action": "build", "request": discovery["request"],
+                        "max_source_rows": pages, "target_rows": target or 0,
+                        "stop_after": stage, "selected_dataset_ids": selected}
+            self._launch(state, decision, dict(self.config), confirmed=True)
+            self._message(state, "user", f"已选择 {len(selected)} 个数据集，继续执行到：{stage}。")
+            self._save(state)
+            return {"status": "queued"}
 
     def confirm_plan(self, sid, data):
         with self.lock:
@@ -350,14 +396,14 @@ class Workspace:
             if not self.public_config()["configured"]:
                 raise ValueError("请先配置 API")
             decision = {**plan["decision"], "target_rows": data.get("target_rows", plan["target_rows"]),
-                        "max_pages": data.get("max_pages", plan["max_pages"])}
+                        "max_source_rows": data.get("max_source_rows", data.get("max_pages", plan.get("max_source_rows", plan.get("max_pages"))))}
             # Explicit confirmation may choose a smaller goal, never silently rewrite history.
             if type(decision["target_rows"]) is not int or decision["target_rows"] < 1:
                 raise ValueError("请输入正整数题数")
             if decision["target_rows"] != plan["target_rows"]:
                 decision["request"] += f"\n用户确认：本次目标题数改为 {decision['target_rows']} 条，以此数量为准。"
             self._launch(state, decision, dict(self.config), confirmed=True)
-            self._message(state, "user", f"确认尝试生成 {decision['target_rows']} 条，采集预算 {decision['max_pages']} 页；不足时再次确认。")
+            self._message(state, "user", f"确认尝试生成 {decision['target_rows']} 条，来源样本上限 {decision.get('max_source_rows', decision.get('max_pages'))} 条；不足时再次确认。")
             self._save(state)
             return {"status": "queued"}
 
@@ -373,7 +419,7 @@ class Workspace:
             report = read_json(root / "run" / "report.json")
             if data.get("action") == "accept":
                 if not report.get("rows") or not (root / "qa.jsonl").is_file():
-                    raise ValueError("没有可接受的 QA，请调整需求或增加采集预算")
+                    raise ValueError("没有可接受的 QA，请调整需求或增加数据集样本上限")
                 run["status"] = "accepted_partial"
                 report.update(status="accepted_partial", accepted_rows=report["rows"], accepted_at=time.time())
                 write_json(root / "run" / "report.json", report)
@@ -384,12 +430,12 @@ class Workspace:
                 raise ValueError("Invalid shortfall action")
             if not self.public_config()["configured"]:
                 raise ValueError("请先配置 API")
-            pages = data.get("max_pages")
+            pages = data.get("max_source_rows", data.get("max_pages"))
             self._launch(state, {"action": "extend", "request": run["request"], "target_rows": run["target_rows"],
-                                 "max_pages": pages, "base_run_id": rid}, dict(self.config), confirmed=True)
+                                 "max_source_rows": pages, "base_run_id": rid}, dict(self.config), confirmed=True)
             # Old version remains readable, but the same prompt cannot be replayed twice.
             run["status"] = "continued"
-            self._message(state, "user", f"保留版本 {run['version']} 已有题目，增加 {pages} 页预算，继续补齐；生成新版本。")
+            self._message(state, "user", f"保留版本 {run['version']} 已有题目，将数据集样本上限增加到 {pages} 条，继续补齐；生成新版本。")
             self._save(state)
             return {"status": "queued"}
 
@@ -401,9 +447,15 @@ class Workspace:
                 run = next(r for r in state["runs"] if r["id"] == rid)
                 if run["status"] != "queued" or self.closed:
                     return
+                worker_env = clean_env(config)
+                # Kaggle credentials are needed only by the dataset worker and
+                # must not be exposed to the conversational SDK process.
+                for key in ("KAGGLE_USERNAME", "KAGGLE_KEY"):
+                    if os.environ.get(key):
+                        worker_env[key] = os.environ[key]
                 process = subprocess.Popen([sys.executable, "-m", "dataflowwebagent.chat.worker", str(root / "job.json")],
                                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                                           env=clean_env(config), start_new_session=True)
+                                           env=worker_env, start_new_session=True)
                 self.processes[(sid, rid)] = process
                 run["status"] = "running"
                 self._save(state)
@@ -418,14 +470,17 @@ class Workspace:
                 if run["status"] == "cancelled":
                     return
                 report = read_json(root / "run" / "report.json")
-                run["status"] = report["status"] if code == 0 and report.get("status") in {"completed", "needs_confirmation"} else "failed"
+                run["status"] = report["status"] if code == 0 and report.get("status") in {"completed", "needs_confirmation", "awaiting_source_selection"} else "failed"
                 if run["status"] == "completed":
-                    if report.get("stop_after") in {"raw", "corpus"}:
-                        self._message(state, "system", f"版本 {run['version']} 已完成：采集 {report['pages_collected']} 页，保留 {report['sources_accepted']} 份正文。已按要求在生成 QA 前结束，可下载阶段数据。")
+                    if report.get("stop_after") in {"collect", "merge", "clean", "raw", "corpus"}:
+                        stage_name = {"collect": "找数据", "raw": "找数据", "merge": "合并数据", "clean": "清洗数据", "corpus": "清洗数据"}.get(report.get("stop_after"), "数据收集")
+                        self._message(state, "system", f"版本 {run['version']} 已完成：找到 {report.get('source_rows', report.get('pages_collected', 0))} 条原始样本，保留 {report['sources_accepted']} 份正文。已完成{stage_name}，并在生成 QA 前结束；可在右侧下载阶段数据。")
                     else:
                         self._message(state, "system", f"版本 {run['version']} 已完成，导出 {report['rows']} 条来源审核通过的 QA。模型审核不等于专家认证。可以预览、下载，或继续修改。")
+                elif run["status"] == "awaiting_source_selection":
+                    self._message(state, "system", f"版本 {run['version']} 找到 {len(report.get('selection_candidates', []))} 个候选数据集。请在右侧选择来源，再确认合并、清洗或生成 QA。目录搜索没有下载数据，也没有调用生成模型。")
                 elif run["status"] == "needs_confirmation":
-                    self._message(state, "system", f"版本 {run['version']} 已生成 {report['rows']} / {report['target_rows']} 条，还差 {report['shortfall']} 条。当前补采已停止，不再消耗生成 API。可以接受当前数量、增加采集预算继续补齐，或在对话中调整主题／来源后创建新版本。新版本数量统计来源审核通过并去重的 QA；模型审核不等于专家认证。")
+                    self._message(state, "system", f"版本 {run['version']} 已生成 {report['rows']} / {report['target_rows']} 条，还差 {report['shortfall']} 条。当前补采已停止，不再消耗生成 API。可以接受当前数量、增加数据集样本上限继续补齐，或在对话中调整主题／来源后创建新版本。新版本数量统计来源审核通过并去重的 QA；模型审核不等于专家认证。")
                 else:
                     error = str(report.get("error") or last_line or "数据任务退出，未生成可用文件").replace(config["api_key"], "[redacted]")
                     run["error"] = error[:1500]

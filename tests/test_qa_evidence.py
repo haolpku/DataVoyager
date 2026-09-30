@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from dataflowwebagent import qa_pipeline
-from dataflowwebagent.qa_artifacts import save_stage, stage_records, export_stage, stage_counts
+from dataflowwebagent.qa_artifacts import save_stage, stage_records, export_stage, stage_counts, build_merged_stage
 from dataflowwebagent.agents.Obtainer.datamixer.operators.evidence import (
     EvidencePrepare, EvidenceSelect, EvidenceQAGenerate, EvidenceQAReview, split_sections,
 )
@@ -147,7 +147,25 @@ def test_raw_export_is_lossless_and_does_not_require_final_qa(tmp_path):
         store.close()
 
 
-@pytest.mark.parametrize('stop_after,expected_calls', [('raw', 0), ('corpus', 1), ('qa', 3)])
+def test_merge_stage_coalesces_whitespace_and_html_duplicates(tmp_path):
+    store = DataStore.init(tmp_path / 'warehouse')
+    try:
+        did = store.catalog.add_dataset(name='raw', source='test')
+        store.ingest_records(did, [
+            {'content': {'html': '<main>One useful fact.</main>', 'url': 'https://one.example'}},
+            {'content': {'text': '  ONE   USEFUL FACT. ', 'source_url': 'https://two.example'}},
+            {'content': {'text': 'A separate fact.'}},
+        ], defaults={'quality_level': 'L1'}, decontaminate=False)
+        report = build_merged_stage(store.root)
+        rows = list(stage_records(store.root, 'merged'))
+        assert report == {'rows': 2, 'duplicates_removed': 1}
+        assert sorted(row['merge']['duplicate_count'] for row in rows) == [1, 2]
+        assert stage_counts(store.root)['merged'] == 2
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize('stop_after,expected_calls', [('collect', 0), ('merge', 0), ('clean', 1), ('qa', 3)])
 def test_source_only_modes_never_generate_qa(tmp_path, monkeypatch, stop_after, expected_calls):
     from dataflowwebagent.agents.Obtainer.datamixer import llm
     from dataflowwebagent.agents.Obtainer.datamixer.models import ModelPool, ModelSpec
@@ -156,12 +174,11 @@ def test_source_only_modes_never_generate_qa(tmp_path, monkeypatch, stop_after, 
     root = tmp_path / 'warehouse'
     DataStore.init(root).close()
     pool = ModelPool(root);pool.add(ModelSpec(name='test', api_url='https://model.invalid'));pool.set_default('test')
-    monkeypatch.setattr(LLMQueryExpander, 'expand', lambda self, q, count: ([ExpandedQuery(query=q)], []))
-    monkeypatch.setattr(web.ToolCallingWebAgentKernel, 'discover', lambda *args: (['https://example.org'], [], 1))
     text = 'Calling a generator function returns an iterator. ' * 8
-    monkeypatch.setattr(web.WebPageFetcher, 'fetch', lambda self, url: web.FetchedPage(
-        requested_url=url, final_url=url, html=f'<html><main><p>{text}</p></main></html>', title='Generators',
-        text_preview=text, status=200, content_type='text/html', headers={}, fetch_mode='mock'))
+    monkeypatch.setattr(qa_pipeline, '_collect_hf_records',
+                        lambda *args, **kwargs: ([{'content': {'text': text, 'title': 'Generators', 'source_url': 'https://huggingface.co/datasets/example/generators'}}], {'status': 'loaded', 'records_loaded': 1, 'source': 'huggingface'}))
+    monkeypatch.setattr(LLMQueryExpander, 'expand', lambda self, q, count: ([ExpandedQuery(query=q)], []))
+    monkeypatch.setattr(web.ToolCallingWebAgentKernel, 'discover', lambda *args: pytest.fail('dataset builds must not search the web'))
     calls = []
     def post(url, payload, key, timeout):
         calls.append(payload)
@@ -174,7 +191,11 @@ def test_source_only_modes_never_generate_qa(tmp_path, monkeypatch, stop_after, 
     assert len(calls) == expected_calls
     assert report['artifacts']['raw']['rows'] == 1
     assert (tmp_path / 'qa.jsonl').exists() == (stop_after == 'qa')
-    if stop_after != 'raw': assert report['artifacts']['corpus']['rows'] == 1
+    if stop_after in {'clean', 'qa'}: assert report['artifacts']['corpus']['rows'] == 1
+    if stop_after in {'merge', 'clean', 'qa'}: assert report['artifacts']['merged']['rows'] == 1
+    if stop_after == 'clean':
+        assert list(report['cleaning']['outputs'].values()) == [1]
+        assert report['cleaning']['source_dataset'] == report['merged_dataset']
 
 
 def test_reference_span_repair_requires_ordered_exact_fragments():

@@ -15,7 +15,7 @@ except ImportError:
 
 from dataflowwebagent.logger import get_logger
 
-logger = get_logger()
+logger = get_logger(__name__)
 
 
 class HuggingFaceManager:
@@ -300,4 +300,3 @@ class HuggingFaceManager:
                 if self._next_endpoint() is None:
                     break
         return None
-

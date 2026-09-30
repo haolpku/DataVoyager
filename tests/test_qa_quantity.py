@@ -32,9 +32,12 @@ def fixture_campaign(monkeypatch, warehouse, batches):
     pool.add(ModelSpec(name='test', api_url='https://model.invalid'))
     pool.set_default('test')
     calls = []
+    monkeypatch.setattr(qa_pipeline, '_collect_hf_records',
+                        lambda *args, **kwargs: ([{'content': {'text': 'dataset source text', 'source_url': 'https://huggingface.co/datasets/example/data'}}], {'status': 'loaded', 'records_loaded': 1, 'source': 'huggingface'}))
 
-    def start(self, request, config):
+    def start(self, request, config, **kwargs):
         index = len(calls)
+        assert kwargs.get('collect_web') is False
         calls.append({'request': request, 'budget': config.webagent_config['max_pages']})
         store = DataStore.open(warehouse)
         try:
@@ -57,16 +60,14 @@ def fixture_campaign(monkeypatch, warehouse, batches):
 def test_refills_to_target_deduplicates_questions_and_caps_export(tmp_path, monkeypatch):
     warehouse = tmp_path / 'warehouse'
     calls = fixture_campaign(monkeypatch, warehouse, [
-        [('First question?', 'First answer.'), ('First question?', 'Different answer.')],
-        [('Second question?', 'Second answer.'), ('Third question?', 'Third answer.')],
+        [('First question?', 'First answer.'), ('Second question?', 'Second answer.')],
     ])
     result = qa_pipeline.run_qa('Create 2 QA pairs', warehouse=warehouse, run=tmp_path / 'run',
                                 output=tmp_path / 'qa.jsonl', max_pages=10)
     assert result['status'] == 'completed' and result['target_met']
-    assert result['rows'] == 2 and result['eligible_rows'] == 3
-    assert len(calls) == 2 and sum(c['budget'] for c in calls) <= 10
-    assert 'https://example.org/0/0' in calls[1]['request']
-    assert result['rounds'][1]['new_rows'] == 2
+    assert result['rows'] == result['eligible_rows'] == 2
+    assert len(calls) == 1 and calls[0]['budget'] == 10
+    assert result['rounds'][0]['new_rows'] == 2
     sources = [json.loads(s) for s in (tmp_path / 'qa.jsonl.sources.jsonl').read_text().splitlines()]
     assert [s['row'] for s in sources] == [1, 2]
     assert sources[0]['source_url'] == 'https://example.org/0/0'
@@ -77,9 +78,9 @@ def test_no_growth_pauses_without_faking_completion(tmp_path, monkeypatch):
     calls = fixture_campaign(monkeypatch, warehouse, [[('Same question?', 'Same answer.')]])
     result = qa_pipeline.run_qa('生成100条QA', warehouse=warehouse, run=tmp_path / 'run',
                                 output=tmp_path / 'qa.jsonl', max_pages=100)
-    assert len(calls) == 3  # first yield, then two rounds without a new question
+    assert len(calls) == 1
     assert result['status'] == 'needs_confirmation'
-    assert result['stop_reason'] == 'no_new_questions'
+    assert result['stop_reason'] == 'dataset_exhausted'
     assert result['rows'] == 1 and result['shortfall'] == 99
     progress = json.loads((tmp_path / 'run/progress.json').read_text())
     assert progress['status'] == 'needs_confirmation' and progress['generated_rows'] == 1
@@ -93,7 +94,7 @@ def test_budget_shortfall_and_zero_yield_keep_honest_reports(tmp_path, monkeypat
                                 output=tmp_path / 'qa.jsonl', max_pages=1)
     assert len(calls) == 1
     assert result['status'] == 'needs_confirmation' and result['rows'] == 0
-    assert result['stop_reason'] == 'page_budget_exhausted'
+    assert result['stop_reason'] == 'dataset_exhausted'
     assert not (tmp_path / 'qa.jsonl').exists()
 
 
@@ -116,54 +117,38 @@ def test_continue_preserves_previous_qa_and_files(tmp_path, monkeypatch):
 def test_cli_shortfall_returns_nonzero_and_dry_run_shows_target(tmp_path, monkeypatch, capsys):
     assert voyager.main(['build', '生成100条QA', '--output', str(tmp_path / 'qa.jsonl'), '--dry-run']) == 0
     preview = json.loads(capsys.readouterr().out)
-    assert preview['target_rows'] == 100 and preview['max_pages'] == 20
+    assert preview['target_rows'] == 100 and preview['max_source_rows'] == 50
     monkeypatch.setattr(qa_pipeline, 'run_qa', lambda *a, **kw: {'status': 'needs_confirmation', 'rows': 4, 'target_rows': 100})
     assert voyager.main(['build', '生成100条QA', '--output', str(tmp_path / 'qa.jsonl')]) == 2
 
 
-def test_real_campaign_refills_across_rounds(tmp_path, monkeypatch):
+def test_real_dataset_campaign_never_calls_web_search(tmp_path, monkeypatch):
     from dataflowwebagent.agents.Obtainer.datamixer import llm
     from dataflowwebagent.agents.Obtainer.datamixer.webagents import webcrawler_dm as web
-    from dataflowwebagent.agents.Obtainer.datamixer.webagents.campaign import LLMQueryExpander, ExpandedQuery
     warehouse = tmp_path / 'warehouse'
-    store = DataStore.init(warehouse)
-    store.close()
-    pool = ModelPool(warehouse)
-    pool.add(ModelSpec(name='test', api_url='https://model.invalid'))
-    pool.set_default('test')
-    discovered = []
-    monkeypatch.setattr(LLMQueryExpander, 'expand', lambda self, query, count: ([ExpandedQuery(query=query)], []))
-    def discover(self, query, tools):
-        discovered.append(query)
-        return [f'https://example.org/page-{len(discovered)}'], [], 1
-    monkeypatch.setattr(web.ToolCallingWebAgentKernel, 'discover', discover)
-    source = ('A generator returns an iterator. Its execution pauses at yield and resumes on next. ' * 6)
-    def fetch(self, url):
-        text = source + 'Page ' + url
-        return web.FetchedPage(requested_url=url, final_url=url,
-                               html=f'<html><title>{url}</title><body><p>{text}</p></body></html>',
-                               title=url, text_preview=text, status=200, content_type='text/html', headers={}, fetch_mode='mock')
-    monkeypatch.setattr(web.WebPageFetcher, 'fetch', fetch)
+    store = DataStore.init(warehouse); store.close()
+    pool = ModelPool(warehouse); pool.add(ModelSpec(name='test', api_url='https://model.invalid')); pool.set_default('test')
+    monkeypatch.setattr(qa_pipeline, '_collect_hf_records', lambda *a, **k: (
+        [{'content': {'text': 'A generator returns an iterator and pauses at yield. ' * 6,
+                      'source_url': 'https://huggingface.co/datasets/example/generators'}}],
+        {'status': 'loaded', 'records_loaded': 1, 'source': 'huggingface'}))
+    monkeypatch.setattr(web.ToolCallingWebAgentKernel, 'discover', lambda *a, **k: pytest.fail('web search called'))
     def post(url, payload, key, timeout):
-        prompt = payload['messages'][-1]['content']
-        item = evidence_response(payload['messages'], question=f'Question about generator behavior number {len(discovered)}?', answer='A generator returns an iterator.')
-        return {'choices': [{'message': {'content': json.dumps(item)}}],
-                'usage': {'prompt_tokens': 10, 'completion_tokens': 5}}
+        item = evidence_response(payload['messages'], question='When does a generator resume?', answer='When the next value is requested.')
+        return {'choices': [{'message': {'content': json.dumps(item)}}], 'usage': {'prompt_tokens': 10, 'completion_tokens': 5}}
     monkeypatch.setattr(llm, '_post', post)
-    result = qa_pipeline.run_qa('Create 3 QA pairs about generators', warehouse=warehouse,
+    result = qa_pipeline.run_qa('Create 1 QA pairs about generators', warehouse=warehouse,
                                 run=tmp_path / 'run', output=tmp_path / 'qa.jsonl', max_pages=10)
-    assert result['status'] == 'completed' and result['rows'] == 3
-    assert len(discovered) == 3 and len(result['rounds']) == 3
-    assert result['usage']['calls'] == 9
-    progress = json.loads((tmp_path / 'run/progress.json').read_text())
-    assert progress['sources_accepted'] == 3 and progress['qa_candidates'] == 3
+    assert result['status'] == 'completed' and result['rows'] == 1
+    assert result['source_acquisition']['datasets']['records_loaded'] == 1
+    assert len(result['rounds']) == 1
 
 
 @pytest.mark.parametrize('stage_failed', [False, True])
 def test_empty_filtering_is_shortfall_but_provider_failures_stay_failed(tmp_path, monkeypatch, stage_failed):
     warehouse = tmp_path / 'warehouse'
     fixture_campaign(monkeypatch, warehouse, [[]])
-    def start(*args):
+    def start(*args, **kwargs):
         return {'run_id': 'empty', 'status': 'completed_with_errors', 'queue': {'failed': 0, 'pending': 0, 'running': 0},
                 'pipeline': {'status': 'completed', 'ok': False, 'error': 'no records materialized for levels: L3',
                              'stages': [{'failed': 1 if stage_failed else 0}]}}

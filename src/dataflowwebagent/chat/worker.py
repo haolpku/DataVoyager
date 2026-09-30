@@ -12,7 +12,8 @@ from types import SimpleNamespace
 from ..agents.Obtainer.datamixer.cas import ContentStore
 from ..agents.Obtainer.datamixer.store import DataStore
 from ..agents.Obtainer.datamixer.telemetry import UsageMeter
-from ..qa_pipeline import export_qa, qa_records, pipeline_spec, resolve_model, run_qa
+from ..qa_pipeline import (export_qa, qa_records, pipeline_spec, resolve_model, run_qa,
+                          _license_tag, _dataset_candidate_score, _search_dataset_candidates)
 from ..qa_progress import QAProgress
 from ..qa_quantity import resolve_target, quantity_result
 
@@ -22,7 +23,8 @@ def read_sources(warehouse: Path, level="L2"):
     with closing(sqlite3.connect(warehouse.resolve().joinpath("catalog.db").as_uri() + "?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         cas = ContentStore(warehouse)
-        for row in conn.execute("SELECT cid,tags_json,domain FROM samples WHERE quality_level=? ORDER BY created_at,sample_id", (level,)):
+        dataset_filter = " AND dataset_id IN (SELECT id FROM datasets WHERE name NOT LIKE '%_merged')" if level == "L1" else ""
+        for row in conn.execute("SELECT cid,tags_json,domain FROM samples WHERE quality_level=?" + dataset_filter + " ORDER BY created_at,sample_id", (level,)):
             yield {"content": cas.get_json(row["cid"]), "tags": json.loads(row["tags_json"] or "{}"), "domain": row["domain"]}
 
 
@@ -89,9 +91,30 @@ def main():
               "target_rows": job.get("target_rows")}
     if job["action"] == "revise":
         revise(job["request"], base_warehouse=Path(job["base_warehouse"]), **kwargs)
+    elif job.get("stop_after") == "discover":
+        candidates, report = _search_dataset_candidates(job["request"])
+        domain = __import__("dataflowwebagent.qa_pipeline", fromlist=["_source_domain"])._source_domain(job["request"])
+        visible = [{"source": row.get("source"), "dataset_id": row.get("dataset_id"),
+                    "title": str(row.get("title") or row.get("dataset_id") or "")[:200],
+                    "description": str(row.get("description") or "")[:900],
+                    "license": _license_tag(row), "downloads": row.get("downloads"),
+                    "language": row.get("language"), "rows_estimate": row.get("rows_estimate"),
+                    "data_kind": row.get("data_kind"), "schema_summary": row.get("schema_summary"),
+                    "curator_note": row.get("curator_note"), "curated": bool(row.get("curated")),
+                    "url": (f"https://huggingface.co/datasets/{row['dataset_id']}" if row.get("source") == "huggingface"
+                            else f"https://www.kaggle.com/datasets/{row['dataset_id']}"),
+                    "match_score": _dataset_candidate_score(row, domain)} for row in candidates]
+        run = root / "run"
+        run.mkdir(parents=True, exist_ok=True)
+        result = {**report, "status": "awaiting_source_selection" if visible else report.get("status", "no_results"),
+                  "request": job["request"], "selection_candidates": visible,
+                  "usage": {"calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+                            "usage_complete": True, "scope": "dataset_catalog_search_only"}}
+        (run / "report.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     else:
-        run_qa(job["request"], max_pages=job["max_pages"], stop_after=job.get("stop_after", "qa"),
-               base_warehouse=Path(job["base_warehouse"]) if job.get("base_warehouse") else None, **kwargs)
+        run_qa(job["request"], max_pages=job.get("max_source_rows", job.get("max_pages", 50)), stop_after=job.get("stop_after", "qa"),
+               base_warehouse=Path(job["base_warehouse"]) if job.get("base_warehouse") else None,
+               selected_dataset_ids=job.get("selected_dataset_ids"), **kwargs)
 
 
 if __name__ == "__main__":

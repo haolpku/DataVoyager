@@ -2,7 +2,7 @@
 
 **Turn a prompt into a QA training dataset.**
 
-Describe what you want to teach your model. DataVoyager finds web sources, extracts relevant text, and turns it into question–answer pairs. You get a JSONL training file, a source record for each pair, and a report of model API usage.
+Describe what you want to teach your model. DataVoyager searches dataset catalogs, with Hugging Face as the primary source and optional Kaggle support. Dataset records go through evidence review before becoming question–answer pairs. You get a JSONL training file, source records, and a report of model API usage.
 
 [中文](README_zh.md) · [Usage guide](docs/quickstart.md) · [Architecture](docs/architecture.md)
 
@@ -16,7 +16,7 @@ You: Focus more on common misconceptions, with fewer definition questions.
 You: This version looks good. Let me download it.
 ```
 
-The local chat workspace keeps the conversation, sample previews, progress, usage, and dataset versions together. Changes to question style or language can reuse collected source text; a new topic starts a new collection. Previous versions remain available.
+The local chat workspace keeps the conversation, sample previews, source progress, usage, and dataset versions together. Changes to question style or language can reuse collected source text; a new topic starts a new collection. Previous versions remain available. Install `.[search]` to enable Hugging Face discovery. When the optional Kaggle integration is installed and configured, it can provide another dataset source.
 
 After installing the Python project below, build the chat controller with Node.js 22+ and Corepack:
 
@@ -67,20 +67,20 @@ export DATAVOYAGER_MODEL="your-model-name"
 export DATAVOYAGER_API_KEY="your-api-key"
 ```
 
-Run the request above. The default collects up to 20 pages; use `--max-pages` to change the crawl budget. No separate browser, Node.js runtime, or DataFlow installation is needed for this workflow. Responses API endpoints are also supported via `DATAVOYAGER_API_FORMAT=responses`.
+Run the request above. The default downloads up to 20 dataset rows; use `--max-source-rows` to change the sample limit. No separate browser, Node.js runtime, or DataFlow installation is needed for this workflow. Responses API endpoints are also supported via `DATAVOYAGER_API_FORMAT=responses`.
 
 ## Watch it work
 
 ```text
-Request → Find sources → Extract & filter → Generate QA → Export JSONL
+Request → Find sources → Merge & deduplicate → Clean & filter → (optional) Generate QA
 ```
 
-The terminal updates every two seconds with the current work, collected pages, accepted sources, QA candidates, model API calls, and reported input/output tokens. Collection and generation can overlap.
+The chat UI lets you choose whether a run stops after finding data, merging sources, cleaning evidence, or continues through QA generation. The terminal updates every two seconds with the current stage, downloaded source rows, accepted sources, QA candidates, model API calls, and reported input/output tokens.
 
 Example progress display (illustrative numbers):
 
 ```text
-[42s] generating QA | pages 8 | accepted sources 5 | QA 3 | API calls 14 (0 failed, 1 active) | tokens 18200 in / 2100 out (partial; some usage unavailable or pending)
+[42s] generating QA | source rows 80 | accepted sources 5 | QA 3 | API calls 14 (0 failed, 1 active) | tokens 18200 in / 2100 out (partial; some usage unavailable or pending)
 ```
 
 Check the latest snapshot from another terminal:

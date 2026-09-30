@@ -152,6 +152,8 @@ class EvidencePrepare(Operator):
             row['content'] = {'text': text, 'title': original.get('title', ''),
                               'source_url': original.get('source_url') or original.get('url') or (row.get('tags') or {}).get('source_uri', ''),
                               'retrieved_at': original.get('retrieved_at') or (row.get('tags') or {}).get('retrieved_at'),
+                              'qa_input': original.get('qa_input'),
+                              'provenance': original.get('provenance') or {},
                               'segments': segments, 'document_type': 'evidence_corpus', 'evidence_version': 1}
         return batch
 
@@ -240,6 +242,45 @@ class EvidenceQAGenerate(EvidenceLLM):
                 remaining.remove(segment)
                 planned.append(segment)
                 covered_topics.update(segment.get('topics') or [])
+            qa_input = source.get('qa_input')
+            requested_chinese = bool(re.search(r'中文|汉语|简体中文', self.instruction))
+            requested_english = bool(re.search(r'英文|英语|English', self.instruction, re.I))
+            input_text = ((qa_input or {}).get('question', '') + ' ' + (qa_input or {}).get('answer', '')
+                          if isinstance(qa_input, dict) else '')
+            language_matches = (not requested_chinese or bool(re.search(r'[\u4e00-\u9fff]', input_text))) and (
+                not requested_english or not re.search(r'[\u4e00-\u9fff]', input_text))
+            if (isinstance(qa_input, dict)
+                    and isinstance(qa_input.get('question'), str)
+                    and qa_input['question'].strip()
+                    and isinstance(qa_input.get('answer'), str)
+                    and qa_input['answer'].strip()
+                    and language_matches
+                    and planned):
+                # Preserve an HF-provided QA pair only when it has supporting
+                # context; the normal quote repair and independent review still
+                # decide whether it can reach the training export.
+                terms = set(re.findall(r'\w+', (qa_input['question'] + ' ' + qa_input['answer']).casefold()))
+                segment = max(planned, key=lambda item: len(
+                    terms & set(re.findall(r'\w+', item.get('text', '').casefold())))
+                )
+                item = {'question': qa_input['question'].strip(),
+                        'answer': qa_input['answer'].strip(),
+                        'knowledge_point': 'existing dataset QA pair', 'claims': []}
+                candidate = {**item, 'candidate_id': identity([
+                    source['source_url'], segment['segment_id'], item['question'],
+                    item['answer'], self.instruction]),
+                    'source_url': source['source_url'], 'title': source['title'],
+                    'segment': segment, 'status': 'unreviewed', 'request': self.instruction,
+                    'source_metadata': source.get('provenance') or {}}
+                candidates.append(candidate)
+                save_stage(ctx.root, 'candidates', candidate['candidate_id'], candidate)
+                row['content'] = {'qa_candidates': candidates,
+                                  'provenance': {'source_url': source['source_url'],
+                                                 'title': source['title'],
+                                                 **(source.get('provenance') or {})},
+                                  'evidence_version': 1, 'generation_limit': MAX_QA_PER_DOCUMENT,
+                                  'unused_selected_segments': max(0, len(selected) - MAX_SELECTED_SEGMENTS)}
+                continue
             for segment in planned:
                 result = self.ask(
                     'Create 0 to 2 distinct QA candidates covering different useful knowledge points in this evidence segment. '
@@ -260,14 +301,16 @@ class EvidenceQAGenerate(EvidenceLLM):
                         raise ValueError('Incomplete QA candidate')
                     candidate = {**item, 'candidate_id': identity([source['source_url'], segment['segment_id'], item['question'], item['answer'], self.instruction]),
                                  'source_url': source['source_url'], 'title': source['title'],
-                                 'segment': segment, 'status': 'unreviewed', 'request': self.instruction}
+                                 'segment': segment, 'status': 'unreviewed', 'request': self.instruction,
+                                 'source_metadata': source.get('provenance') or {}}
                     if item_index < MAX_QA_PER_SEGMENT:
                         candidates.append(candidate)
                     else:
                         candidate.update(status='needs_review', review={'reason': 'candidate_budget_exceeded'})
                     save_stage(ctx.root, 'candidates', candidate['candidate_id'], candidate)
             row['content'] = {'qa_candidates': candidates,
-                              'provenance': {'source_url': source['source_url'], 'title': source['title']},
+                              'provenance': {'source_url': source['source_url'], 'title': source['title'],
+                                             **(source.get('provenance') or {})},
                               'evidence_version': 1, 'generation_limit': MAX_QA_PER_DOCUMENT,
                               'unused_selected_segments': max(0, len(selected) - MAX_SELECTED_SEGMENTS)}
         return batch

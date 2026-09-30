@@ -8,8 +8,9 @@ The chat workbench exposes **阶段数据** independently of the final QA downlo
 
 | Download | Contents |
 | --- | --- |
-| `raw.jsonl` | Original HTML and acquisition metadata from L1; no text-only conversion |
-| `corpus.jsonl` | Selected documents from L2, cleaned text, section segments, relevance decisions and evidence context |
+| `raw.jsonl` | Records downloaded from Hugging Face and other supported dataset catalogs, with original content and acquisition metadata |
+| `merged.jsonl` | Deterministic unified export; whitespace/case-normalized exact-text duplicates are coalesced and source metadata is retained |
+| `corpus.jsonl` | Cleaned text, section segments, relevance decisions and evidence context from L2 |
 | `source-review.jsonl` | Both accepted and rejected documents, with per-segment decisions and reasons |
 | `candidates.jsonl` | All generated QA, exact source segments, claims, review results and original references when repaired |
 | Final QA + sources | Only reviewed, deduplicated QA in Alpaca format; a separate manifest retains evidence and review results |
@@ -29,18 +30,20 @@ datavoyager export --warehouse data/finance.run/warehouse \
 
 Use a new output filename; the CLI refuses existing destinations. Candidate records have `unreviewed`, `source_supported`, `needs_review` or `duplicate` status. `source_supported` is an intermediate model verdict; final deduplication and cross-source holds can still exclude a candidate. Old, unreviewed QA remain downloadable in their original versions but are not counted as reviewed QA when extending a new version.
 
-## Stop before QA
+## Choose how far to run
 
-In chat, say “只采集原始网页，不生成问答” or “整理高血压相关正文，先不要生成 QA”. The controller sets `stop_after` to `raw` or `corpus`. The backend omits the later operators; it does not merely hide their output. Source-only runs use a page budget and do not claim to meet a QA target.
+The chat stage picker lets users stop after collection, merge, or cleaning; generating QA is a separate full-workflow choice. Collection searches Hugging Face and other supported dataset catalogs. Merge creates a deterministic union and removes exact text duplicates while retaining source metadata. Cleaning extracts readable text and selects relevant evidence. The backend omits later operators; it does not merely hide their output. Source-only runs use a dataset sample-row limit and do not claim to meet a QA target.
 
 ```bash
-datavoyager build '收集美国基金费用的投资者教育资料，优先 Investor.gov' \
-  --stop-after raw --max-pages 5 --run data/finance-raw-run
+datavoyager build '收集基金费用相关的投资者教育数据集样本' \
+  --stop-after collect --max-source-rows 100 --run data/finance-raw-run
+datavoyager build '合并基金费用相关的数据集样本' \
+  --stop-after merge --max-source-rows 100 --run data/finance-merged-run
 datavoyager build '整理成人高血压的 WHO 健康教育正文' \
-  --stop-after corpus --max-pages 5 --run data/medical-corpus-run
+  --stop-after clean --max-source-rows 100 --run data/medical-corpus-run
 ```
 
-Each run needs a fresh directory. The default `stop_after` is `qa`. Revisions and extensions currently operate on QA versions; source-only runs can provide retained L2 text for a subsequent QA revision.
+Each run needs a fresh directory. The default `stop_after` is `qa`. Revisions and extensions currently operate on QA versions; cleaned source runs retain L2 text for a subsequent QA revision.
 
 ## Step 3: evidence preparation
 
@@ -60,4 +63,4 @@ Each run needs a fresh directory. The default `stop_after` is `qa`. Revisions an
 
 Generation and review currently use the same configured model in separate calls. Reviewers can make mistakes and share the generator's biases. Cross-site verification, expert approval, automatic answer rewriting and global topic quotas are not implemented. A source can itself be wrong or incomplete; a source-supported label does not resolve that risk.
 
-The page budget bounds collected pages, not review calls or token costs. More source sections or candidates add model calls. Reported usage includes selection, generation, quote repair and review. A theoretical six-per-document capacity is only an upper bound: evidence filtering, zero-question outputs, review and deduplication can substantially reduce yield.
+The dataset row limit bounds downloaded source records, not review calls or token costs. More source sections or candidates add model calls. Reported usage includes selection, generation, quote repair and review. A theoretical six-per-document capacity is only an upper bound: evidence filtering, zero-question outputs, review and deduplication can substantially reduce yield.

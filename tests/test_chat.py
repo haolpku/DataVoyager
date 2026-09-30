@@ -276,6 +276,24 @@ def test_preflight_confirmation_is_persistent_and_cannot_be_replayed(tmp_path, m
         assert len(launched) == 1
 
 
+def test_stage_picker_is_enforced_for_new_builds(tmp_path, monkeypatch):
+    seen = []
+    def agent(context, config, directory, emit):
+        seen.append(context['requested_stop_after'])
+        return {'action': 'build', 'request': '收集金融数据', 'max_pages': 2,
+                'target_rows': 50, 'reply': '开始收集'}
+    app = Workspace(tmp_path, agent=agent)
+    configure(app)
+    sid = app.create()['id']
+    monkeypatch.setattr(Workspace, '_work', lambda self, *args: None)
+    app.send(sid, '收集金融数据', stop_after='merge')
+    wait_until(lambda: not app.snapshot(sid)['busy'])
+    run = app.snapshot(sid)['runs'][0]
+    job = json.loads((app.session_dir(sid) / 'versions' / run['id'] / 'job.json').read_text())
+    assert seen == ['merge']
+    assert job['stop_after'] == 'merge' and job['target_rows'] is None
+
+
 def seed_shortfall(app, sid):
     rid, root = seed_version(app, sid)
     app.chats[sid]['runs'][0].update(status='needs_confirmation', target_rows=100)
@@ -354,10 +372,36 @@ def test_source_only_launch_preserves_stop_stage_and_ignores_qa_target(tmp_path,
     sid = app.create()['id']
     monkeypatch.setattr(app, '_work', lambda *args: None)
     app._launch(app.chats[sid], {'action': 'build', 'request': 'Collect 100 sources',
-        'max_pages': 2, 'target_rows': 100, 'stop_after': 'corpus'}, app.config)
+        'max_pages': 2, 'target_rows': 100, 'stop_after': 'merge'}, app.config)
     state = app.chats[sid]
     assert not state.get('pending_plan')
     run = state['runs'][0]
     job = json.loads((app.session_dir(sid) / 'versions' / run['id'] / 'job.json').read_text())
-    assert job['stop_after'] == 'corpus' and job['target_rows'] is None
+    assert job['stop_after'] == 'merge' and job['target_rows'] is None
+    app.close()
+
+
+def test_user_can_select_discovered_datasets_and_confirm_next_stage(tmp_path, monkeypatch):
+    app = Workspace(tmp_path)
+    configure(app)
+    sid = app.create()['id']
+    monkeypatch.setattr(app, '_work', lambda *args: None)
+    discovery_id = 'a' * 16
+    root = app.session_dir(sid) / 'versions' / discovery_id
+    write_json(root / 'run' / 'report.json', {'status': 'awaiting_source_selection', 'selection_candidates': [
+        {'dataset_id': 'finance/source-a'}, {'dataset_id': 'finance/source-b'}]})
+    app.chats[sid]['runs'].append({'id': discovery_id, 'version': 1, 'action': 'build',
+        'request': '金融训练 QA', 'max_source_rows': 40, 'stop_after': 'discover',
+        'status': 'awaiting_source_selection', 'created_at': time.time()})
+    app._save(app.chats[sid])
+    with pytest.raises(ValueError, match='当前列表'):
+        app.select_sources(sid, discovery_id, {'dataset_ids': ['not/listed'], 'stop_after': 'qa',
+            'target_rows': 5, 'max_source_rows': 10})
+    app.select_sources(sid, discovery_id, {'dataset_ids': ['finance/source-a', 'finance/source-b'],
+        'stop_after': 'clean', 'target_rows': 10, 'max_source_rows': 40})
+    selected_run = app.chats[sid]['runs'][-1]
+    job = json.loads((app.session_dir(sid) / 'versions' / selected_run['id'] / 'job.json').read_text())
+    assert job['stop_after'] == 'clean'
+    assert job['selected_dataset_ids'] == ['finance/source-a', 'finance/source-b']
+    assert job['target_rows'] is None
     app.close()

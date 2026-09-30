@@ -50,6 +50,7 @@ class CampaignConfig:
     pipeline_model: str = ""
     l2_dataset: str = ""
     l3_dataset: str = ""
+    merged_dataset: str = ""
     pipeline_batch_size: int = 8
     pipeline_extractor: str = "pipeline"
     pipeline_mineru_gpu: str = "0"
@@ -604,16 +605,23 @@ class WebAgentCampaignRunner:
         config: CampaignConfig,
         *,
         enqueue_only: bool = False,
+        initial_records: list[dict[str, Any]] | None = None,
+        collect_web: bool = True,
     ) -> dict[str, Any]:
         self._ensure_dataset(config)
-        expander = self.expander_factory(self.root, config.expand_model)
-        subqueries, expansion_trace = expander.expand(
-            root_query, config.subquery_count
-        )
+        if collect_web:
+            expander = self.expander_factory(self.root, config.expand_model)
+            subqueries, expansion_trace = expander.expand(
+                root_query, config.subquery_count
+            )
+        else:
+            subqueries, expansion_trace = [], []
         run_id = "webcampaign-" + uuid.uuid4().hex[:16]
         self.queue.create_campaign(run_id, root_query, config, expansion_trace)
         queued = self.queue.add_tasks(run_id, subqueries)
         self._write_expansion(run_id, root_query, config, subqueries, expansion_trace)
+        if initial_records:
+            self._ingest_initial_records(config, run_id, initial_records)
         if queued != len(subqueries):
             self.queue.mark_campaign(run_id, "failed", "query dedup changed queue size")
             raise RuntimeError(
@@ -626,6 +634,33 @@ class WebAgentCampaignRunner:
             workers=config.workers,
             max_tasks=config.batch_size or None,
         )
+
+    def _ingest_initial_records(
+        self, config: CampaignConfig, run_id: str, records: list[dict[str, Any]]
+    ) -> None:
+        """Seed the campaign's L1 dataset before its streaming pipeline starts."""
+        prepared = []
+        for record in records:
+            item = dict(record)
+            extra_tags = item.pop("tags", {})
+            if isinstance(extra_tags, dict):
+                for key, value in extra_tags.items():
+                    item.setdefault(key, value)
+            item["campaign_id"] = run_id
+            prepared.append(item)
+        store = DataStore.open(self.root)
+        try:
+            dataset_id = store.catalog.resolve_dataset(config.dataset)
+            if dataset_id is None:
+                raise KeyError(f"campaign dataset not found: {config.dataset}")
+            store.ingest_records(
+                dataset_id,
+                prepared,
+                defaults={"quality_level": "L1"},
+                decontaminate=False,
+            )
+        finally:
+            store.close()
 
     def resume(
         self,

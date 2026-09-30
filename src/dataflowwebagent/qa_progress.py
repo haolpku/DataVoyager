@@ -23,8 +23,12 @@ def format_progress(snapshot: dict) -> str:
     coverage = "" if usage["usage_complete"] else " (partial; some usage unavailable or pending)"
     quantity = (f"unique QA {snapshot.get('generated_rows', 0)}/{snapshot['target_rows']} | "
                 if snapshot.get("target_rows") else "")
+    acquisition = snapshot.get("source_acquisition", {}).get("datasets",
+                  snapshot.get("source_acquisition", {}).get("huggingface", {}))
+    dataset_rows = (f"dataset rows {acquisition.get('records_loaded', 0)} | "
+                    if isinstance(acquisition, dict) and acquisition.get("records_loaded") is not None else "")
     return (f"[{snapshot['elapsed_seconds']:.0f}s] {snapshot['stage']} | "
-            f"pages {snapshot['pages_collected']} | accepted sources {snapshot['sources_accepted']} | "
+            f"{dataset_rows}source rows {snapshot.get('source_rows', snapshot['pages_collected'])} | accepted sources {snapshot['sources_accepted']} | "
             f"QA candidates {snapshot['qa_candidates']} | {quantity}API calls {usage['calls']} "
             f"({usage['failed_calls']} failed, {usage['in_flight']} active) | "
             f"tokens {usage['input_tokens']} in / {usage['output_tokens']} out{coverage}")
@@ -38,7 +42,9 @@ class QAProgress:
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._loop, name="qa-progress", daemon=True)
         self.status = "running"
-        self.stage = "searching / collecting sources"
+        self.stage = "searching dataset sources"
+        self.stage_override = ""
+        self.source_acquisition = {}
         self.quantity = {}
 
     def start(self):
@@ -78,15 +84,20 @@ class QAProgress:
             warning = str(exc)
         if self.status == "running":
             active = pipeline.get("active_stages") or []
-            self.stage = ", ".join(_LABELS.get(name, name) for name in active) or "searching / collecting sources"
-            if pipeline.get("status") == "completed":
-                self.stage = "exporting QA"
+            if self.stage_override:
+                self.stage = self.stage_override
+            else:
+                self.stage = ", ".join(_LABELS.get(name, name) for name in active) or "searching dataset sources"
+                if pipeline.get("status") == "completed":
+                    self.stage = "exporting QA"
         from .qa_artifacts import stage_counts
         stages = stage_counts(self.warehouse)
         snapshot = {"status": self.status, "stage": self.stage, "pid": os.getpid(),
                     "updated_at": time.time(), "elapsed_seconds": round(time.monotonic() - self.started, 1),
+                    "source_rows": counts[self.config.dataset],
                     "pages_collected": counts[self.config.dataset],
                     "sources_accepted": counts[self.config.l2_dataset],
+                    "source_acquisition": dict(self.source_acquisition),
                     "qa_candidates": stages["candidates"], "stage_artifacts": stages,
                     "stages": pipeline.get("stages", []), "usage": self.meter.snapshot(), **dict(self.quantity)}
         if warning:

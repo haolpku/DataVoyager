@@ -1,14 +1,16 @@
 """Durable stage snapshots. Reads never open a mutable DataStore on a live run."""
 from contextlib import closing
 import hashlib
+import html
 import json
 from pathlib import Path
+import re
 import sqlite3
 import uuid
 
 from .agents.Obtainer.datamixer.cas import ContentStore
 
-STAGES = {'raw': '原始网页', 'corpus': '可用正文与证据',
+STAGES = {'raw': '收集来源', 'merged': '合并去重后数据', 'corpus': '清洗后正文与证据',
           'source-review': '正文筛选记录', 'candidates': 'QA 候选及审核记录'}
 
 
@@ -37,7 +39,11 @@ def stage_records(root, stage):
             cas = ContentStore(root)
             # A read transaction gives a consistent snapshot while workers keep writing.
             db.execute('BEGIN')
-            for r in db.execute('SELECT sample_id,cid,tags_json,created_at FROM samples WHERE quality_level=? ORDER BY created_at,sample_id',
+            query = ('SELECT s.sample_id,s.cid,s.tags_json,s.created_at FROM samples s '
+                     'JOIN datasets d ON d.id=s.dataset_id WHERE s.quality_level=? '
+                     + ("AND d.name NOT LIKE '%_merged' " if stage == 'raw' else '')
+                     + 'ORDER BY s.created_at,s.sample_id')
+            for r in db.execute(query,
                                 ('L1' if stage == 'raw' else 'L2',)):
                 yield {'sample_id': r['sample_id'], 'created_at': r['created_at'],
                        'content': cas.get_json(r['cid']), 'metadata': json.loads(r['tags_json'] or '{}')}
@@ -51,13 +57,68 @@ def stage_records(root, stage):
                 yield json.loads(row[0])
 
 
+def _merge_text(record):
+    content = record.get('content') if isinstance(record, dict) else None
+    if not isinstance(content, dict):
+        return ''
+    text = content.get('text') or content.get('document') or content.get('html') or ''
+    if not isinstance(text, str):
+        return ''
+    text = html.unescape(re.sub(r'<[^>]+>', ' ', text))
+    return re.sub(r'\s+', ' ', text).strip().casefold()
+
+
+def build_merged_stage(root):
+    """Materialize a deterministic union of collected records, coalescing exact text duplicates."""
+    root = Path(root)
+    merged = {}
+    for record in stage_records(root, 'raw') or ():
+        key_text = _merge_text(record)
+        # Preserve short structured records too; use the canonical record when no body exists.
+        key = hashlib.sha256((key_text or json.dumps(record.get('content', {}), ensure_ascii=False,
+                                                       sort_keys=True)).encode()).hexdigest()
+        if key not in merged:
+            merged[key] = {**record, 'merge': {'duplicate_count': 1, 'source_records': [record.get('metadata', {})]}}
+        else:
+            item = merged[key]
+            item['merge']['duplicate_count'] += 1
+            item['merge']['source_records'].append(record.get('metadata', {}))
+    path = root / 'qa_stages.sqlite'
+    if path.exists():
+        with closing(sqlite3.connect(path, timeout=30)) as db:
+            db.execute('DELETE FROM artifacts WHERE stage=?', ('merged',))
+            db.commit()
+    for key, record in merged.items():
+        save_stage(root, 'merged', key, record)
+    return {'rows': len(merged), 'duplicates_removed': max(0, sum(r['merge']['duplicate_count'] for r in merged.values()) - len(merged))}
+
+
+def materialize_merged_dataset(root, dataset_name):
+    """Persist the merged stage as an L1 dataset for downstream cleaning/export."""
+    from .agents.Obtainer.datamixer.store import DataStore
+    store = DataStore.open(root)
+    try:
+        dataset_id = store.catalog.resolve_dataset(dataset_name)
+        if dataset_id is None:
+            dataset_id = store.catalog.add_dataset(name=dataset_name, source='merged_sources')
+        else:
+            store.catalog.erase(dataset_id=dataset_id, reason='rebuild merged dataset')
+        records = ({'content': row.get('content'),
+                    'tags': {**(row.get('metadata') or {}), 'merge': row.get('merge', {})}}
+                   for row in stage_records(root, 'merged') or ())
+        result = store.ingest_records(dataset_id, records, defaults={'quality_level': 'L1'}, decontaminate=False)
+        return {'dataset': dataset_name, 'rows': result.written}
+    finally:
+        store.close()
+
+
 def stage_counts(root):
     root = Path(root)
     counts = dict.fromkeys(STAGES, 0)
     try:
         if (root / 'catalog.db').exists():
             with closing(sqlite3.connect((root / 'catalog.db').resolve().as_uri() + '?mode=ro', uri=True, timeout=1)) as db:
-                for level, count in db.execute("SELECT quality_level,COUNT(*) FROM samples WHERE quality_level IN ('L1','L2') GROUP BY quality_level"):
+                for level, count in db.execute("SELECT s.quality_level,COUNT(*) FROM samples s JOIN datasets d ON d.id=s.dataset_id WHERE s.quality_level IN ('L1','L2') AND d.name NOT LIKE '%_merged' GROUP BY s.quality_level"):
                     counts['raw' if level == 'L1' else 'corpus'] = count
         if (root / 'qa_stages.sqlite').exists():
             with closing(sqlite3.connect((root / 'qa_stages.sqlite').resolve().as_uri() + '?mode=ro', uri=True, timeout=1)) as db:

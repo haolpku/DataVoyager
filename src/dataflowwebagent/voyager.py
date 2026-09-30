@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     status.add_argument("--json", action="store_true")
     export = sub.add_parser("export", help="export a saved intermediate dataset without model calls")
     export.add_argument("--warehouse", type=Path, required=True)
-    export.add_argument("--stage", choices=["raw", "corpus", "source-review", "candidates"], required=True)
+    export.add_argument("--stage", choices=["raw", "merged", "corpus", "source-review", "candidates"], required=True)
     export.add_argument("--output", type=Path, required=True)
     build = sub.add_parser("build", help="start acquisition from a natural-language request")
     build.add_argument("request", help="describe the desired dataset and quality requirements")
@@ -46,11 +46,12 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--keywords", default="")
     build.add_argument("--focus", action="append", default=[])
     build.add_argument("--target-datasets", type=_positive, default=1)
-    build.add_argument("--output", type=Path, help="build and export a web-sourced QA dataset as Alpaca JSONL")
-    build.add_argument("--max-pages", type=_positive, default=20, help="page budget for --output mode (default: 20)")
+    build.add_argument("--output", type=Path, help="build and export a dataset-sourced QA file as Alpaca JSONL")
+    build.add_argument("--max-source-rows", "--max-pages", dest="max_pages", type=_positive, default=50,
+                       help="maximum source dataset rows to download (default: 50; --max-pages is a deprecated alias)")
     build.add_argument("--target-rows", type=_positive, help="desired unique QA count; inferred from explicit request counts when omitted")
-    build.add_argument("--max-rounds", type=_positive, default=5, help="bounded refill rounds within --max-pages (default: 5)")
-    build.add_argument("--stop-after", choices=["raw", "corpus", "qa"], default="qa", help="stop at raw collection, selected corpus, or reviewed QA")
+    build.add_argument("--max-rounds", type=_positive, default=5, help="deprecated compatibility option; dataset builds use one selected sample")
+    build.add_argument("--stop-after", choices=["collect", "merge", "clean", "qa", "raw", "corpus"], default="qa", help="stop after collection, merge, cleaning, or reviewed QA")
     build.add_argument("--warehouse", type=Path)
     build.add_argument("--run", type=Path)
     build.add_argument("--dry-run", action="store_true", help="print the request without network calls or writes")
@@ -73,11 +74,13 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(snapshot, ensure_ascii=False, indent=2) if args.json else format_progress(snapshot))
         return 0
     if args.command == "export":
-        from .qa_artifacts import export_stage
+        from .qa_artifacts import build_merged_stage, export_stage
         if args.output.exists():
             parser.error("output already exists; choose a new path")
         if not (args.warehouse / "catalog.db").is_file():
             parser.error("warehouse does not exist")
+        if args.stage == "merged":
+            build_merged_stage(args.warehouse)
         count = export_stage(args.warehouse, args.stage, args.output, overwrite=False)
         print(json.dumps({"stage": args.stage, "rows": count, "output": str(args.output)}, ensure_ascii=False))
         return 0
@@ -102,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
                    "warehouse": str(warehouse), "run": str(run)}
         if output:
             from .qa_quantity import resolve_target
-            preview.update({"mode": "web_qa", "output": str(output), "format": "alpaca", "max_pages": args.max_pages,
+            preview.update({"mode": "dataset_qa", "output": str(output), "format": "alpaca", "max_source_rows": args.max_pages,
                             "target_rows": resolve_target(args.request, args.target_rows) if args.stop_after == "qa" else None, "max_rounds": args.max_rounds, "stop_after": args.stop_after})
         print(json.dumps(preview,
                          ensure_ascii=False, indent=2))

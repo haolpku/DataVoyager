@@ -13,7 +13,7 @@ const schema = {
     request: { type: "string" }, max_pages: { type: "integer", minimum: 1, maximum: 1000 },
     target_rows: { type: "integer", minimum: 0, maximum: 10000 },
     base_run_id: { type: "string" },
-    stop_after: { type: "string", enum: ["raw", "corpus", "qa"] },
+    stop_after: { type: "string", enum: ["discover", "collect", "merge", "clean", "raw", "corpus", "qa"] },
   },
 };
 

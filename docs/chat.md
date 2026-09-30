@@ -26,6 +26,14 @@ and API key. The controller requires a Responses-compatible endpoint supported b
 Codex. Dataset generation can use Responses or Chat Completions on the same endpoint.
 A chat-only endpoint cannot power the Codex controller.
 
+For Hugging Face dataset discovery in chat builds, install the optional search
+dependencies with `pip install -e '.[search]'`. Each build searches dataset catalogs,
+primarily Hugging Face, and streams a bounded sample into the evidence pipeline.
+Kaggle is searched when its optional integration and credentials are available. If no
+suitable dataset is found or download fails, the run records the reason and asks you
+to adjust the source request; the acquisition report describes the missing source data. The progress panel
+shows the selected dataset and downloaded row count.
+
 No authentication or paid model call is made merely by opening the page or saving
 settings. The first message starts the controller. The UI's configured indicator means
 settings are present, not that a provider connection has been tested.
@@ -46,18 +54,26 @@ You: What has finished, and how much API usage has been reported?
 
 The agent chooses among a reply, new collection, revision, and explicitly requested additional collection.
 Its complete accumulated request is saved with each version. Initial sample runs
-normally use a five-page budget. A page budget is not a QA quota or a monetary cap.
+normally download up to 50 source rows. This sample limit is not a QA quota or a monetary cap.
 Explicit requested QA counts are stored separately as `target_rows`. The interface
 shows generated unique questions against this target. New runs count only source-reviewed and deduplicated QA; model review is not expert certification.
-The collection budget does not restrict the number of navigation choices: discovery
-can inspect up to 50 links per page, even for a one-page sample. Link ranking helps
-navigation; it does not replace the model's source-quality judgment.
+A source-row limit is not a QA quota or spending cap. Source relevance and QA yield
+depend on the selected dataset and its fields.
+
+Choose **Find data, then let me select sources** to stop after a catalog search. For
+finance and medical requests, the workspace uses the hand-reviewed Hugging Face
+shortlist in [reviewed-datasets.md](reviewed-datasets.md); cards show schema, task fit,
+license tag, and known limitations. Select one to five datasets, then confirm whether to download,
+merge, clean, or generate QA. The selected dataset IDs are passed through to the
+collector, which does not silently replace them. A request that explicitly requires
+license information filters out unknown and non-commercial tags; catalog tags are
+metadata, not a legal review.
 
 - **New collection:** discovers sources and creates an independent version. It does
   not automatically append to or merge with old versions.
 - **Revision:** copies accepted text from a prior version and regenerates QA with
-  updated requirements. No new crawl is needed; previous outputs are unchanged.
-- **Additional collection:** after a shortfall, explicitly add a page budget. A new
+  updated requirements. No new dataset search is needed; previous outputs are unchanged.
+- **Additional collection:** after a shortfall, explicitly add a dataset row limit. A new
   version copies the previous QA and accepted sources, then searches under the same
   requirements to fill the remaining count. Earlier questions are retained first.
 - **During a run:** ask questions or discuss changes. There is at most one active
@@ -70,26 +86,23 @@ manifest downloads. Final exports require source-review approval and question de
 
 ## Requested counts and confirmation
 
-For example: “生成 100 条中文金融问答，最多采集 5 页。” The current operator
+For example: “生成 100 条中文金融问答，最多下载 50 条数据集样本。” The current operator
 generates at most six QA candidates per document, so the backend pauses before collection
-and explains that this budget supports at most 30 rows, with actual yield possibly lower.
-Edit the target or page budget in the confirmation card, cancel, or explicitly try
+and explains that this sample limit supports at most 30 rows, with actual yield possibly lower.
+Edit the target or dataset sample limit in the confirmation card, cancel, or explicitly try
 the existing budget. This upper bound is not a quality or yield prediction. The chat
 controller turn may consume API usage; the paused dataset build has not started.
 
-When the target fits the budget, the build starts directly. Count-aware builds search
-in up to five rounds within the total page budget. They stop when the requested number
-of distinct questions is reached, the allocated budget or round limit is reached, or
-two consecutive rounds produce no new questions. Unused allocation from a round is
-not reclaimed. Discovery/search navigation requests are separate from this collection
-budget; it is not an API-spending limit. Source and topic restrictions stay in place.
+When the target fits the budget, the build starts directly. The default build processes one selected dataset sample. If it cannot meet the requested
+count, it stops and reports the shortfall for confirmation. The sample limit does not
+cap API spending; source and topic restrictions stay in place.
 
 A shortfall has status `needs_confirmation`, not `completed`. The worker exits and
 the interface offers three paths:
 
 - Accept the current count without further generation. The original target and gap
   remain in the report; status becomes `accepted_partial` and `target_met` stays false.
-- Add an explicit page budget and continue in a new version, retaining existing QA.
+- Search dataset catalogs again with an explicit sample limit in a new version, retaining existing QA.
 - Discuss a different topic or source scope and start a new independent build.
 
 Partial exports can be previewed and downloaded with their shortfall status. Zero-QA runs cannot be accepted as partial QA, but their saved intermediate datasets can still be downloaded. Confirmation is checked by the server, survives
@@ -98,20 +111,20 @@ invalidates an unconfirmed plan. Running tasks are still interrupted on server r
 they do not resume automatically. Provider or pipeline failures remain failures, not
 quantity confirmations.
 
-The CLI accepts `--target-rows` and `--max-rounds`, and recognizes simple explicit
+The CLI accepts `--target-rows` and `--max-source-rows`, and recognizes simple explicit
 Chinese/English counts in the request. It attempts the supplied budget without an
 interactive prompt, writes any available partial export, and exits with code **2** for
 `needs_confirmation` (0 for completion, 1 for failure):
 
 ```bash
 datavoyager build '中文金融基础知识问答，优先参考公开投资者教育资料' \
-  --target-rows 100 --max-pages 150 --max-rounds 5 --output data/finance-qa.jsonl
+  --target-rows 100 --max-source-rows 150 --output data/finance-qa.jsonl
 ```
 
 ## Progress and usage
 
 The browser refreshes backend snapshots every two seconds. It does not use the agent's
-narration as a progress counter. Select a version to see its pages, accepted sources,
+narration as a progress counter. Select a version to see its source rows, accepted sources,
 QA candidates, stage, and data-generation usage.
 
 Main-agent usage is displayed for the whole conversation as **turns and reported tokens**.
@@ -126,8 +139,8 @@ usage for an interrupted in-flight request may be unavailable.
 
 ## Versions and recovery
 
-Each crawl writes completed tool steps to
-`warehouse/webcrawler_dm_runs/<crawl-id>/trace.jsonl` within its version directory.
+Each dataset search writes completed tool steps to
+`warehouse/webdataset searcher_dm_runs/<dataset search-id>/trace.jsonl` within its version directory.
 The trace records tool arguments, observations, and reported errors after each step,
 so completed steps survive discovery failures or cancellation. An in-flight tool
 may not have a recorded result. The configured model key is redacted. Traces contain
