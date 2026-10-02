@@ -11,7 +11,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlencode
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from dataflowwebagent.utils.hf_endpoints import (
     DEFAULT_HF_ENDPOINTS,
@@ -53,7 +53,7 @@ def _ensure_hf_mirror_env(*, cache_root: Path | None = None) -> None:
         os.environ["HUGGINGFACE_HUB_CACHE"] = str(hub_cache)
 
 
-def _load_hf_dataset(dataset_id: str, *, split: str, streaming: bool) -> Any:
+def _load_hf_dataset(dataset_id: str, *, config: str | None, split: str, streaming: bool) -> Any:
     """Load a dataset with multi-level endpoint fallback.
 
     Each endpoint is probed first (short timeout, no retry), then tried in
@@ -76,7 +76,7 @@ def _load_hf_dataset(dataset_id: str, *, split: str, streaming: bool) -> Any:
             continue
         _apply_hf_endpoint(endpoint)
         try:
-            result = _load_hf_dataset_once(dataset_id, split=split, streaming=streaming)
+            result = _load_hf_dataset_once(dataset_id, config=config, split=split, streaming=streaming)
             _datasets_runtime_usable = True
             return result
         except (ImportError, AttributeError) as exc:
@@ -98,7 +98,7 @@ def _load_hf_dataset(dataset_id: str, *, split: str, streaming: bool) -> Any:
     )
 
 
-def _load_hf_dataset_once(dataset_id: str, *, split: str, streaming: bool) -> Any:
+def _load_hf_dataset_once(dataset_id: str, *, config: str | None, split: str, streaming: bool) -> Any:
     from datasets import get_dataset_config_names, load_dataset
     from datasets.download.download_config import DownloadConfig
 
@@ -110,7 +110,7 @@ def _load_hf_dataset_once(dataset_id: str, *, split: str, streaming: bool) -> An
         "download_config": DownloadConfig(max_retries=0),
     }
     try:
-        return load_dataset(dataset_id, **kwargs)
+        return load_dataset(dataset_id, config, **kwargs) if config else load_dataset(dataset_id, **kwargs)
     except Exception as first_error:
         try:
             configs = get_dataset_config_names(dataset_id)
@@ -121,25 +121,29 @@ def _load_hf_dataset_once(dataset_id: str, *, split: str, streaming: bool) -> An
         return load_dataset(dataset_id, configs[0], **kwargs)
 
 
-def _load_hf_dataset_server_rows(dataset_id: str, *, split: str, limit: int) -> list[dict[str, Any]]:
+def _load_hf_dataset_server_rows(dataset_id: str, *, config: str | None, split: str, limit: int) -> list[dict[str, Any]]:
     """Read a small public sample without importing the optional datasets stack.
 
     The Dataset Server exposes normalized rows for viewer-enabled Hub datasets.
     This is a bounded fallback for environments where ``datasets`` cannot load
     its binary dependencies; it is not used for bulk download.
     """
-    query = urlencode({"dataset": dataset_id, "config": "default", "split": split,
+    # Config is part of the selected source manifest.  Only legacy candidates
+    # without one fall back to ``default``; callers preparing data through the
+    # Skill must choose it after inspecting the dataset card and splits.
+    query = urlencode({"dataset": dataset_id, "config": config or "default", "split": split,
                        "offset": 0, "length": min(max(1, limit), 100)})
     url = "https://datasets-server.huggingface.co/rows?" + query
     error = None
-    for attempt in range(2):
+    for attempt in range(3):
         try:
-            with urlopen(url, timeout=10) as response:
+            request = Request(url, headers={"Accept": "application/json", "User-Agent": "DataVoyager/1.0"})
+            with urlopen(request, timeout=10) as response:
                 payload = json.loads(response.read().decode("utf-8"))
             break
         except Exception as exc:
             error = exc
-            if attempt < 1:
+            if attempt < 2:
                 time.sleep(attempt + 1)
     else:
         raise ObtainerCliError("HF_DATASET_SERVER_ROWS_FAILED",
@@ -327,28 +331,30 @@ def _export_huggingface_jsonl(
         }
 
     _ensure_hf_mirror_env(cache_root=output_root / ".hf_cache")
+    selected_config = str(item.get("config") or item.get("hf_config") or (item.get("download") or {}).get("config") or "").strip() or None
+    selected_split = str(item.get("split") or (item.get("download") or {}).get("split") or split).strip() or split
     effective_max_rows = _effective_max_rows(max_rows)
     effective_max_bytes = _effective_max_bytes(max_bytes_per_dataset)
     endpoint_used = os.environ.get("HF_ENDPOINT") or ""
     try:
-        dataset = _load_hf_dataset(dataset_id, split=split, streaming=streaming)
+        dataset = _load_hf_dataset(dataset_id, config=selected_config, split=selected_split, streaming=streaming)
         selected_rows = islice(dataset, effective_max_rows)
     except ObtainerCliError:
         # ``datasets`` may be unavailable or binary-incompatible even though
         # the Hub and its row service are reachable.  Preserve a small usable
         # source sample instead of rejecting every candidate.
         try:
-            selected_rows = iter(_load_hf_hub_file_rows(dataset_id, split=split, limit=effective_max_rows))
+            selected_rows = iter(_load_hf_hub_file_rows(dataset_id, split=selected_split, limit=effective_max_rows))
             endpoint_used = "huggingface_hub:file"
         except ObtainerCliError:
-            selected_rows = iter(_load_hf_dataset_server_rows(dataset_id, split=split, limit=effective_max_rows))
+            selected_rows = iter(_load_hf_dataset_server_rows(dataset_id, config=selected_config, split=selected_split, limit=effective_max_rows))
             endpoint_used = "https://datasets-server.huggingface.co/rows"
     rows_iter = (
-        _normalize_row(dict(row), dataset_id=dataset_id, split=split, row_index=index)
+        _normalize_row(dict(row), dataset_id=dataset_id, split=selected_split, row_index=index)
         for index, row in enumerate(selected_rows, 1)
     )
     dataset_name = _safe_name(dataset_id)
-    records_path = output_root / "records" / f"{dataset_name}.{split}.jsonl"
+    records_path = output_root / "records" / f"{dataset_name}.{selected_split}.jsonl"
     write_result = _write_jsonl(records_path, rows_iter, max_bytes=effective_max_bytes)
     rows_written = int(write_result["rows_written"])
     return {
@@ -356,7 +362,8 @@ def _export_huggingface_jsonl(
         "status": "completed" if rows_written > 0 else "empty",
         "source": "huggingface",
         "dataset_id": dataset_id,
-        "split": split,
+        "config": selected_config,
+        "split": selected_split,
         "endpoint_used": endpoint_used,
         "rows_written": rows_written,
         "bytes_written": int(write_result["bytes_written"]),

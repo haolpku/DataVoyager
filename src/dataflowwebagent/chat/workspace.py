@@ -37,6 +37,13 @@ def _terminate_process(process: subprocess.Popen, *, force: bool = True) -> None
 def read_json(path: Path, default=None):
     try:
         return json.loads(path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError:
+        # Compatibility for reports written by older Windows builds that
+        # accidentally used the active GBK code page.  New writers are UTF-8.
+        try:
+            return json.loads(path.read_text(encoding="gbk"))
+        except (OSError, ValueError, UnicodeDecodeError):
+            return {} if default is None else default
     except (OSError, ValueError):
         return {} if default is None else default
 
@@ -46,6 +53,18 @@ def write_json(path: Path, value):
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
     temp.replace(path)
+
+
+def read_terminal_report(path: Path, *, attempts: int = 5) -> dict:
+    """Wait briefly for a just-exited worker to finish its atomic report write."""
+    report: dict = {}
+    for attempt in range(attempts):
+        report = read_json(path)
+        if report.get("status"):
+            return report
+        if attempt + 1 < attempts:
+            time.sleep(0.05)
+    return report
 
 
 def redact_secret(value, secret) -> str:
@@ -130,6 +149,13 @@ class Workspace:
             for run in state.get("runs", []):
                 if run["status"] in {"queued", "running"}:
                     run["status"] = "interrupted"
+                # Recover terminal truth from the worker artifact.  This also
+                # repairs sessions written by older versions that raced the
+                # final report and mislabelled a quantity shortfall as failed.
+                report = read_json(path.parent / "versions" / str(run.get("id") or "") / "run" / "report.json")
+                if run.get("status") == "failed" and report.get("status") in {"needs_confirmation", "awaiting_source_selection"}:
+                    run["status"] = report["status"]
+                    run.pop("error", None)
             self.chats[state["id"]] = state
             self._save(state)
 
@@ -398,6 +424,16 @@ class Workspace:
                 raise ValueError("请选择当前列表中的至少 1 个数据集")
             if len(set(selected)) != len(selected):
                 raise ValueError("数据集不能重复选择")
+            # A persisted discovery card may predate a catalog-filter update.
+            # Revalidate at the irreversible selection boundary so a stale
+            # quantum/benchmark candidate cannot enter a general ML run.
+            from ..qa_pipeline import _is_catalog_candidate_eligible, _source_domain
+            domain = _source_domain(discovery["request"])
+            chosen_rows = [row for row in candidates if row.get("dataset_id") in selected]
+            invalid = [row.get("dataset_id") for row in chosen_rows
+                       if not _is_catalog_candidate_eligible(row, domain, discovery["request"])]
+            if invalid:
+                raise ValueError("所选数据集已不符合当前需求，请刷新候选后重新选择：" + ", ".join(invalid))
             stage = data.get("stop_after", "qa")
             if stage not in {"collect", "merge", "clean", "qa"}:
                 raise ValueError("请选择有效的后续处理阶段")
@@ -407,10 +443,11 @@ class Workspace:
             pages = data.get("max_source_rows", discovery.get("max_source_rows", 50))
             if type(pages) is not int or not 1 <= pages <= 1000:
                 raise ValueError("来源样本上限需为 1–1000")
-            decision = {"action": "build", "request": discovery["request"],
+            decision = {"action": "build", "request": discovery["request"] +
+                        f"\nThe user has now confirmed the listed sources and requested continuation through {stage}; do not stop at discovery.",
                         "max_source_rows": pages, "target_rows": target or 0,
                         "stop_after": stage, "selected_dataset_ids": selected,
-                        "selected_datasets": [copy.deepcopy(row) for row in candidates if row.get("dataset_id") in selected]}
+                        "selected_datasets": [copy.deepcopy(row) for row in chosen_rows]}
             self._launch(state, decision, dict(self.config), confirmed=True)
             self._message(state, "user", f"已选择 {len(selected)} 个数据集，继续执行到：{stage}。")
             self._save(state)
@@ -498,6 +535,7 @@ class Workspace:
                 # launched.
                 process = subprocess.Popen([sys.executable, "-m", "dataflowwebagent.chat.worker", str(root / "job.json")],
                                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                                           errors="replace",
                                            env=worker_env, cwd=self.root, start_new_session=True)
                 self.processes[(sid, rid)] = process
                 run["status"] = "running"
@@ -512,7 +550,7 @@ class Workspace:
                 self.processes.pop((sid, rid), None)
                 if run["status"] == "cancelled":
                     return
-                report = read_json(root / "run" / "report.json")
+                report = read_terminal_report(root / "run" / "report.json")
                 # A worker may return a non-zero code after it has already
                 # persisted a legitimate non-success terminal outcome (for
                 # example, a quantity shortfall).  Preserve that actionable

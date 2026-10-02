@@ -61,6 +61,7 @@ def test_retries_and_missing_usage_are_not_reported_as_free(tmp_path, monkeypatc
     assert usage["calls_without_usage"] == 2
     assert not usage["usage_complete"]
     assert usage["cost"] is None
+    assert usage["last_error"] == "LLM HTTP 429"
 
 
 def test_incomplete_responses_still_count_billed_tokens(tmp_path, monkeypatch):
@@ -72,3 +73,14 @@ def test_incomplete_responses_still_count_billed_tokens(tmp_path, monkeypatch):
         usage = meter.snapshot()
     assert usage["failed_calls"] == 1
     assert usage["total_tokens"] == 60
+
+
+def test_http_error_summary_excludes_provider_response_body(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "_post", lambda *args: (_ for _ in ()).throw(RuntimeError('LLM HTTP 401: {"error":"Invalid token"}')))
+    spec = ModelSpec(name="test", api_url="https://model.invalid", telemetry_key=str(tmp_path.resolve()))
+    with UsageMeter(tmp_path, tmp_path) as meter:
+        with pytest.raises(RuntimeError, match="401"):
+            llm.complete(spec, [], max_retries=0)
+        usage = meter.snapshot()
+    assert usage["last_error"] == "LLM HTTP 401"
+    assert "Invalid token" not in (tmp_path / "api_calls.jsonl").read_text()

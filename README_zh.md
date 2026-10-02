@@ -1,14 +1,46 @@
 # DataVoyager
 
-**一句需求，生成可用于微调的 QA 数据集。**
+**从 Hugging Face 发现并准备领域训练数据。**
 
-告诉 DataVoyager 你想让模型学什么。它会搜索数据集站点，以 Hugging Face 为主；安装并配置可选集成后也可搜索 Kaggle。数据集样本经过证据筛选后生成问答。你拿到的是 JSONL 数据文件、每条问答的来源，以及本次运行的模型 API 用量。
+当前主流程是 [`codex-skills/domain-training-data`](codex-skills/domain-training-data)
+中的 `domain-training-data` Codex Skill。它由 Codex 对话承担多轮交互：检索真实
+HF 目录、阅读数据卡、检查 config/split/字段和小样本，用户确认来源后才下载、合并、
+清洗或转为 SFT/QA。找数据和确定性下载不需要 LLM API Key。
+
+本地网页工作台与 QA 生成器保留为实验性的旧路径，不再是 Skill 的主 agent。
 
 [English](README.md) · [使用说明](docs/quickstart.md) · [架构](docs/architecture.md)
 
 ![DataVoyager chat workspace](docs/assets/chat-workspace.png)
 
-## 用对话打磨数据集
+## 用 Codex Skill 工作
+
+将目录安装到本机 Codex Skills（本机部署时已完成这一步）：
+
+```powershell
+Copy-Item .\codex-skills\domain-training-data "$env:USERPROFILE\.codex\skills\domain-training-data" -Recurse
+```
+
+然后可以直接对 Codex 说：
+
+```text
+找英文机器学习基础资料。先只展示候选：每个候选的数据卡、许可、config/split、字段、
+样本和推荐理由；不要下载，也不要生成 QA。
+```
+
+选定来源后继续在同一个对话里决定是否合并和怎样清洗。务必说清数量口径：
+“下载 10,000 行来源数据”“得到 10,000 条去重后记录”和“得到 10,000 条有效 QA”
+不是一回事。对 HF Dataset Server 支持的数据集，可用随附脚本明确检查 config/split，
+不依赖本机可选的 `datasets` 运行时：
+
+```powershell
+python .\codex-skills\domain-training-data\scripts\hf_dataset.py inspect owner/dataset
+python .\codex-skills\domain-training-data\scripts\hf_dataset.py rows owner/dataset --config CONFIG --split SPLIT --limit 3
+```
+
+上线前按[功能与质量验收用例](docs/skill-test-cases.md)测试新领域的数据准备流程。
+
+## 旧版网页工作台
 
 ```text
 你：为 Python 初学者做一份中文生成器问答，先给我看一小批。
@@ -16,7 +48,7 @@
 你：这版可以，下载下来。
 ```
 
-网页里可以多轮补充需求、查看样例，再生成新版本。修改问法或语言时复用已有资料；扩大主题时重新采集。右侧持续展示来源进度、模型用量和版本记录。安装 `.[search]` 可启用 Hugging Face 搜索。安装并配置可选的 Kaggle 集成后，也可从 Kaggle 数据集中查找来源。
+网页里可以多轮补充需求、查看样例，再生成新版本。它保留给旧的一体式 QA pipeline 实验；来源选择、config/split 决策和数据准备应优先使用上面的 Skill。
 
 安装下面的 Python 项目后，再准备聊天主 agent（Node.js 22+、Corepack）：
 

@@ -110,7 +110,8 @@ def codex_turn(context: dict, config: dict, workspace: Path, emit) -> dict:
                "model": config["model"], "base_url": config["base_url"], "api_key": config["api_key"]}
     process = subprocess.Popen([node, str(runner_path())], stdin=subprocess.PIPE,
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                               text=True, encoding="utf-8", env=clean_env(config), start_new_session=True)
+                               text=True, encoding="utf-8", errors="replace",
+                               env=clean_env(config), start_new_session=True)
     # Node aborts its SDK turn; this watchdog handles a stuck runner as well.
     def terminate():
         _terminate_process(process)

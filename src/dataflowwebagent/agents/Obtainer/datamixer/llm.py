@@ -102,6 +102,20 @@ def _extract_responses(resp: dict) -> str:
     raise RuntimeError(f"could not parse responses output: {str(resp)[:200]}")
 
 
+def safe_error_summary(exc: BaseException) -> str:
+    """Return a useful provider diagnostic without persisting provider bodies."""
+    text = str(exc)
+    http = next((token.strip(":,;()[]") for token in text.split()
+                 if token.strip(":,;()[]").isdigit() and len(token.strip(":,;()[]")) == 3), None)
+    if "LLM HTTP" in text and http:
+        return f"LLM HTTP {http}"
+    if "LLM connection error" in text:
+        return "LLM connection error"
+    if "incomplete" in text.casefold():
+        return "LLM response incomplete"
+    return f"{type(exc).__name__}: {text[:120]}"
+
+
 def _call(spec: ModelSpec, messages, json_mode: bool) -> str:
     spec = _proxy_spec_if_available(spec)
     if spec.response_format not in {"openaichat", "response"}:
@@ -111,15 +125,21 @@ def _call(spec: ModelSpec, messages, json_mode: bool) -> str:
     started = time.monotonic()
     response = None
     failed = True
+    error_summary = ""
     try:
         payload = (_chat_payload if spec.response_format == "openaichat" else _responses_payload)(spec, messages, json_mode)
         response = _post(spec.api_url, payload, spec.resolved_key(), spec.timeout)
         result = (_extract_chat if spec.response_format == "openaichat" else _extract_responses)(response)
         failed = False
         return result
+    except Exception as exc:
+        # Persist only a stable diagnostic category. Provider bodies can echo
+        # prompts or secrets, so they must not enter run artifacts.
+        error_summary = safe_error_summary(exc)
+        raise
     finally:
         if meter:
-            meter.finish(call_id, spec.model, response, failed, time.monotonic() - started)
+            meter.finish(call_id, spec.model, response, failed, time.monotonic() - started, error_summary)
 
 
 def _proxy_spec_if_available(spec: ModelSpec) -> ModelSpec:

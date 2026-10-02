@@ -22,6 +22,7 @@ class UsageMeter:
         self.lock = threading.Lock()
         self.calls = self.failed = self.finished = self.with_usage = 0
         self.input_tokens = self.output_tokens = 0
+        self.last_error = ""
 
     def __enter__(self):
         with _LOCK:
@@ -39,7 +40,8 @@ class UsageMeter:
             self.calls += 1
             return self.calls
 
-    def finish(self, call_id: int, model: str, response: dict | None, error: bool, elapsed: float):
+    def finish(self, call_id: int, model: str, response: dict | None, error: bool, elapsed: float,
+               error_summary: str = ""):
         usage = response.get("usage") if isinstance(response, dict) else None
         usage = usage if isinstance(usage, dict) else {}
         incoming = usage.get("input_tokens", usage.get("prompt_tokens"))
@@ -50,9 +52,13 @@ class UsageMeter:
                   "elapsed_seconds": round(elapsed, 3), "timestamp": time.time(),
                   "input_tokens": incoming if known else None,
                   "output_tokens": outgoing if known else None}
+        if error_summary:
+            record["error"] = error_summary
         with self.lock:
             self.finished += 1
             self.failed += int(error)
+            if error_summary:
+                self.last_error = error_summary
             self.with_usage += int(known)
             if known:
                 self.input_tokens += incoming
@@ -69,4 +75,5 @@ class UsageMeter:
                     "input_tokens": self.input_tokens, "output_tokens": self.output_tokens,
                     "total_tokens": self.input_tokens + self.output_tokens,
                     "usage_complete": self.with_usage == self.calls,
+                    "last_error": self.last_error or None,
                     "scope": "model_api_only", "cost": None}

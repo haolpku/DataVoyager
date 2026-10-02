@@ -162,6 +162,19 @@ def test_confirmed_selection_is_not_searched_again(tmp_path, monkeypatch):
     assert len(rows) == 1 and report["selection_frozen"] is True
 
 
+def test_confirmed_source_download_does_not_require_model_relevance_check(tmp_path, monkeypatch):
+    records = tmp_path / "source.jsonl"
+    records.write_text(json.dumps({"question": "What is overfitting?", "answer": "It is fitting noise."}) + "\n",
+                       encoding="utf-8")
+    monkeypatch.setattr(qa_pipeline, "_model_json", lambda *args, **kwargs: pytest.fail("model must not be called"))
+    rows, report = qa_pipeline._records_from_download(
+        {"source": "huggingface", "dataset_id": "edu/ml"},
+        {"records_jsonl": str(records), "split": "train"}, 5, "ML basics", tmp_path, "test", "mit",
+        screen_relevance=False)
+    assert len(rows) == 1
+    assert report["relevance_status"] == "user_confirmed_unreviewed"
+
+
 def test_export_validates_pairs_deduplicates_and_separates_sources(tmp_path):
     store = DataStore.init(tmp_path / "warehouse")
     try:

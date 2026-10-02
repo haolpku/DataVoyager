@@ -8,6 +8,9 @@ import os
 from pathlib import Path
 import uuid
 import re
+from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import quote
+from urllib.request import urlopen
 
 import yaml
 
@@ -150,6 +153,31 @@ def _candidate_sort_key(candidate: dict, domain: str) -> tuple:
             size if size is not None else float("inf"), -int(candidate.get("downloads") or 0))
 
 
+def _hydrate_hf_candidate_sizes(candidates: list[dict]) -> None:
+    """Add exact Hub storage bytes to candidates without downloading datasets."""
+    targets = [row for row in candidates if row.get("source") == "huggingface" and not _candidate_size_bytes(row)]
+    if not targets:
+        return
+
+    def fetch(row: dict) -> tuple[dict, int | None]:
+        dataset_id = str(row.get("dataset_id") or "")
+        if not dataset_id:
+            return row, None
+        url = "https://huggingface.co/api/datasets/" + quote(dataset_id, safe="/") + "?expand=usedStorage"
+        try:
+            with urlopen(url, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            value = payload.get("usedStorage") if isinstance(payload, dict) else None
+            return row, int(value) if isinstance(value, (int, float)) and value > 0 else None
+        except Exception:
+            return row, None
+
+    with ThreadPoolExecutor(max_workers=min(6, len(targets))) as pool:
+        for row, size in pool.map(fetch, targets):
+            if size is not None:
+                row["size"] = size
+
+
 def _is_catalog_candidate_eligible(candidate: dict, domain: str, request: str) -> bool:
     """Reject benchmark variants that cannot serve as educational source corpora."""
     text = " ".join(str(candidate.get(key) or "") for key in ("dataset_id", "title", "description")).casefold()
@@ -232,6 +260,7 @@ def _search_dataset_candidates(request: str) -> tuple[list[dict], dict]:
     candidates = [row for row in candidates if _is_catalog_candidate_eligible(row, domain, request)]
     if domain:
         candidates = [row for row in candidates if _dataset_candidate_score(row, domain) > 0]
+        _hydrate_hf_candidate_sizes(candidates)
         candidates.sort(key=lambda row: _candidate_sort_key(row, domain))
     if _requires_clear_license(request):
         candidates = [row for row in candidates if _license_is_clear(row)]
@@ -253,7 +282,8 @@ def _search_dataset_candidates(request: str) -> tuple[list[dict], dict]:
 
 
 def _records_from_download(candidate: dict, completed: dict, limit: int, request: str,
-                           warehouse: Path, model: str, license_tag: str) -> tuple[list[dict], dict]:
+                           warehouse: Path, model: str, license_tag: str,
+                           screen_relevance: bool = True) -> tuple[list[dict], dict]:
     """Normalize a bounded dataset sample, then screen its actual rows for request fit."""
     source_kind = str(candidate.get("source") or "huggingface")
     dataset_id = str(candidate["dataset_id"])
@@ -285,6 +315,15 @@ def _records_from_download(candidate: dict, completed: dict, limit: int, request
                                "license": license_tag, "split": completed.get("split", "train")})
     if not normalized:
         return [], {"reason": "downloaded rows had no usable text"}
+    if not screen_relevance:
+        # A person has already reviewed and explicitly frozen this source in
+        # the UI.  Acquisition must remain usable without a model endpoint;
+        # later optional QA/source-review stages can still perform model-based
+        # content checks and report their own failure separately.
+        return normalized, {"reason": "user-confirmed source; model relevance review deferred",
+                            "relevance_status": "user_confirmed_unreviewed",
+                            "sample_rows_checked": len(raw_rows),
+                            "sample_rows_accepted": len(normalized)}
     try:
         decision = _model_json(warehouse, model,
             "Judge whether these sampled records are actually suitable source material for the requested "
@@ -374,7 +413,11 @@ def _collect_hf_records(request: str, warehouse: Path, model: str, limit: int,
                                       "error": str(failed.get("error") or "download returned no rows")[:400]})
             continue
         checked, sample_check = _records_from_download(
-            candidate, current, per_dataset_limit, request, warehouse, model, _license_tag(candidate))
+            candidate, current, per_dataset_limit, request, warehouse, model, _license_tag(candidate),
+            # Confirmed IDs form a frozen user decision.  Do not turn a
+            # transient model/API failure into “no suitable dataset” before
+            # download, merge, or deterministic cleaning can even begin.
+            not bool(selected_dataset_ids))
         if checked:
             records.extend(checked)
             accepted_datasets.append({"source": candidate.get("source"), "dataset_id": candidate.get("dataset_id"),
@@ -519,6 +562,21 @@ def resolve_model(warehouse: Path) -> str:
     return model
 
 
+def _preflight_configured_model(warehouse: Path, model: str) -> None:
+    """Fail one cheap request early when the UI supplied an unusable API key."""
+    from dataclasses import replace
+    from .agents.Obtainer.datamixer.llm import complete
+    spec = ModelPool(warehouse).get(model)
+    # Only the UI's explicitly supplied provider is preflighted.  Saved local
+    # model pools keep their existing execution behavior.
+    if not all(os.environ.get("DATAVOYAGER_" + key, "").strip()
+               for key in ("MODEL", "BASE_URL", "API_KEY")):
+        return
+    probe = replace(spec, telemetry_key=str(warehouse.resolve()), max_tokens=min(int(spec.max_tokens or 64), 64))
+    complete(probe, [{"role": "user", "content": "Reply with an empty JSON object."}],
+             json_mode=True, max_retries=0)
+
+
 def run_qa(request: str, *, warehouse: Path, run: Path, output: Path,
            max_pages: int = 20, focus: list[str] | None = None,
            target_rows: int | None = None, max_rounds: int = 5,
@@ -549,7 +607,7 @@ def run_qa(request: str, *, warehouse: Path, run: Path, output: Path,
     store = DataStore.init(warehouse)
     store.close()
     pipeline = run / "pipeline.yaml"
-    pipeline.write_text(yaml.safe_dump(pipeline_spec(request, model, stop_after), allow_unicode=True, sort_keys=False))
+    pipeline.write_text(yaml.safe_dump(pipeline_spec(request, model, stop_after), allow_unicode=True, sort_keys=False), encoding="utf-8")
     prefix = "qa_" + uuid.uuid4().hex[:12]
     config = CampaignConfig(
         model=model, expand_model=model, subquery_count=1, workers=1, task_retries=0,
@@ -569,6 +627,8 @@ def run_qa(request: str, *, warehouse: Path, run: Path, output: Path,
         if base_warehouse:
             _copy_previous(base_warehouse, warehouse, config)
         with UsageMeter(warehouse, run) as meter:
+            if stop_after == "qa":
+                _preflight_configured_model(warehouse, model)
             if stop_after != "qa":
                 return _execute_sources(runner, request, warehouse, run, config, meter, stop_after, max_pages,
                                         selected_dataset_ids=selected_dataset_ids, selected_datasets=selected_datasets)
@@ -654,9 +714,11 @@ def _execute_qa(runner, request, warehouse, run, output, config, meter, *,
                           and not campaign.get("queue", {}).get("running")
                           and pipeline.get("status") == "completed")
             if campaign.get("status") != "completed" and not empty_only:
-                raise RuntimeError(f"Dataset evidence pipeline did not complete; inspect {run / 'campaign.json'}")
+                detail = (meter.snapshot().get("last_error") or "unknown pipeline failure")
+                raise RuntimeError(f"Dataset evidence pipeline did not complete ({detail}); inspect {run / 'campaign.json'}")
             if pipeline and not pipeline.get("ok") and not empty_only:
-                raise RuntimeError(f"Dataset evidence pipeline did not complete; inspect {run / 'campaign.json'}")
+                detail = (meter.snapshot().get("last_error") or "unknown pipeline failure")
+                raise RuntimeError(f"Dataset evidence pipeline did not complete ({detail}); inspect {run / 'campaign.json'}")
             store = DataStore.open(warehouse)
             try:
                 rows, sources, _ = qa_records(store, config.l3_dataset)
@@ -690,12 +752,12 @@ def _execute_qa(runner, request, warehouse, run, output, config, meter, *,
         from .qa_artifacts import build_merged_stage, export_stages
         build_merged_stage(warehouse)
         result["artifacts"] = export_stages(warehouse, run / "artifacts")
-        (run / "report.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+        (run / "report.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return result
     except (Exception, KeyboardInterrupt) as exc:
         status = "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed"
         snapshot = progress.stop(status)
-        (run / "report.json").write_text(json.dumps({"status": status, "error": str(exc), "usage": snapshot["usage"]}, ensure_ascii=False, indent=2) + "\n")
+        (run / "report.json").write_text(json.dumps({"status": status, "error": str(exc), "usage": snapshot["usage"]}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         raise
 
 
@@ -723,7 +785,7 @@ def _execute_sources(runner, request, warehouse, run, config, meter, stop_after,
         progress.stage_override = "processing dataset records"
         progress.write()
         campaign = runner.start(request, config, initial_records=hf_records, collect_web=False)
-        (run / 'campaign.json').write_text(json.dumps(campaign, ensure_ascii=False, indent=2))
+        (run / 'campaign.json').write_text(json.dumps(campaign, ensure_ascii=False, indent=2), encoding="utf-8")
         pipeline = campaign.get('pipeline') or {}
         empty = str(pipeline.get('error', '')).startswith('no records materialized') and not any(
             stage.get('failed') for stage in pipeline.get('stages', [])) and not campaign.get('queue', {}).get('failed')
@@ -753,11 +815,11 @@ def _execute_sources(runner, request, warehouse, run, config, meter, stop_after,
             result['merge'] = merge_report
         if clean_report:
             result['cleaning'] = clean_report
-        (run / 'report.json').write_text(json.dumps(result, ensure_ascii=False, indent=2))
+        (run / 'report.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         return result
     except (Exception, KeyboardInterrupt) as exc:
         snapshot = progress.stop('failed')
-        (run / 'report.json').write_text(json.dumps({'status': 'failed', 'error': str(exc), 'usage': snapshot['usage']}))
+        (run / 'report.json').write_text(json.dumps({'status': 'failed', 'error': str(exc), 'usage': snapshot['usage']}), encoding="utf-8")
         raise
 
 

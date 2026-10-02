@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from ..agents.Obtainer.datamixer.cas import ContentStore
 from ..agents.Obtainer.datamixer.store import DataStore
 from ..agents.Obtainer.datamixer.telemetry import UsageMeter
+from ..agents.Obtainer.datamixer.llm import safe_error_summary
 from ..qa_pipeline import (export_qa, qa_records, pipeline_spec, resolve_model, run_qa,
                           _license_tag, _dataset_candidate_score, _search_dataset_candidates)
 from ..qa_progress import QAProgress
@@ -78,7 +79,7 @@ def revise(request: str, *, base_warehouse: Path, warehouse: Path, run: Path, ou
                 return result
             except (Exception, KeyboardInterrupt) as exc:
                 snapshot = progress.stop("failed")
-                (run / "report.json").write_text(json.dumps({"status": "failed", "error": str(exc), "usage": snapshot["usage"]}), encoding="utf-8")
+                (run / "report.json").write_text(json.dumps({"status": "failed", "error": safe_error_summary(exc), "usage": snapshot["usage"]}), encoding="utf-8")
                 raise
     finally:
         store.close()
@@ -98,6 +99,8 @@ def main():
                     "title": str(row.get("title") or row.get("dataset_id") or "")[:200],
                     "description": str(row.get("description") or "")[:900],
                     "license": _license_tag(row), "downloads": row.get("downloads"),
+                    "size": row.get("size"), "size_category": row.get("size_category"),
+                    "quick_trial": bool(row.get("quick_trial")),
                     "language": row.get("language"), "rows_estimate": row.get("rows_estimate"),
                     "data_kind": row.get("data_kind"), "schema_summary": row.get("schema_summary"),
                     "curator_note": row.get("curator_note"), "curated": bool(row.get("curated")),

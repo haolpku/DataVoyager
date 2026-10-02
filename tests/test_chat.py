@@ -405,3 +405,48 @@ def test_user_can_select_discovered_datasets_and_confirm_next_stage(tmp_path, mo
     assert job['selected_dataset_ids'] == ['finance/source-a', 'finance/source-b']
     assert job['target_rows'] is None
     app.close()
+
+
+def test_source_selection_revalidates_stale_machine_learning_candidates(tmp_path, monkeypatch):
+    app = Workspace(tmp_path)
+    configure(app)
+    sid = app.create()['id']
+    discovery_id = 'b' * 16
+    root = app.session_dir(sid) / 'versions' / discovery_id
+    write_json(root / 'run' / 'report.json', {'status': 'awaiting_source_selection', 'selection_candidates': [
+        {'dataset_id': 'org/quantum-machine-learning', 'description': 'quantum machine learning papers'}]})
+    app.chats[sid]['runs'].append({'id': discovery_id, 'version': 1, 'action': 'build',
+        'request': 'English machine learning fundamentals', 'max_source_rows': 20, 'stop_after': 'discover',
+        'status': 'awaiting_source_selection', 'created_at': time.time()})
+    with pytest.raises(ValueError, match='不符合当前需求'):
+        app.select_sources(sid, discovery_id, {'dataset_ids': ['org/quantum-machine-learning'],
+            'stop_after': 'clean', 'max_source_rows': 10})
+    app.close()
+
+
+def test_terminal_report_retries_an_incomplete_first_read(tmp_path, monkeypatch):
+    from dataflowwebagent.chat import workspace
+    responses = iter([{}, {"status": "needs_confirmation", "rows": 4}])
+    monkeypatch.setattr(workspace, "read_json", lambda path, default=None: next(responses))
+    monkeypatch.setattr(workspace.time, "sleep", lambda _: None)
+    assert workspace.read_terminal_report(tmp_path / "report.json") == {"status": "needs_confirmation", "rows": 4}
+
+
+def test_workspace_recovers_a_shortfall_mislabelled_as_failed(tmp_path):
+    sid, rid = 'c' * 16, 'd' * 16
+    session = tmp_path / 'sessions' / sid
+    write_json(session / 'versions' / rid / 'run' / 'report.json', {'status': 'needs_confirmation', 'rows': 4})
+    write_json(session / 'state.json', {'id': sid, 'messages': [], 'runs': [
+        {'id': rid, 'status': 'failed', 'error': 'stale worker error'}], 'agent_turns': []})
+    app = Workspace(tmp_path)
+    run = app.chats[sid]['runs'][0]
+    assert run['status'] == 'needs_confirmation'
+    assert 'error' not in run
+    app.close()
+
+
+def test_read_json_supports_legacy_windows_gbk_report(tmp_path):
+    from dataflowwebagent.chat.workspace import read_json
+    report = tmp_path / 'report.json'
+    report.write_bytes('{"status":"needs_confirmation","note":"用户确认"}'.encode('gbk'))
+    assert read_json(report)['status'] == 'needs_confirmation'

@@ -1,14 +1,58 @@
 # DataVoyager
 
-**Turn a prompt into a QA training dataset.**
+**Prepare domain training data from Hugging Face.**
 
-Describe what you want to teach your model. DataVoyager searches dataset catalogs, with Hugging Face as the primary source and optional Kaggle support. Dataset records go through evidence review before becoming question–answer pairs. You get a JSONL training file, source records, and a report of model API usage.
+The primary workflow is now the `domain-training-data` Codex Skill in
+[`codex-skills/domain-training-data`](codex-skills/domain-training-data): Codex
+searches the live Hugging Face catalog, reads dataset cards, inspects
+configurations/splits and sample schemas, and lets the user choose sources in
+the conversation. It then optionally downloads, merges, cleans, and converts
+the approved sources into a training format with source provenance and an
+audit report. Discovery and deterministic download do not need an LLM API key.
+
+The local web workspace and QA generator remain an experimental legacy path;
+they are not the orchestration layer for the Skill.
 
 [中文](README_zh.md) · [Usage guide](docs/quickstart.md) · [Architecture](docs/architecture.md)
 
 ![DataVoyager chat workspace](docs/assets/chat-workspace.png)
 
-## Build it in a conversation
+## Use it as a Codex Skill
+
+Install the folder into your local Codex Skills directory (it is already
+installed on this machine during the local setup):
+
+```powershell
+Copy-Item .\codex-skills\domain-training-data "$env:USERPROFILE\.codex\skills\domain-training-data" -Recurse
+```
+
+Then ask Codex, for example:
+
+```text
+Find English Hugging Face material for machine-learning fundamentals. Stop
+after discovery and show each candidate's data card, license, config/split,
+schema, and a recommendation. Do not download anything yet.
+```
+
+After choosing sources, continue in the same conversation with a target such
+as “download 10,000 source rows”, “produce 10,000 retained deduplicated
+records”, or “convert the approved English material into Chinese SFT QA while
+retaining English technical terms in parentheses.” The distinction is
+intentional: read rows, retained records, and valid QA pairs are different
+quantities.
+
+For datasets enabled in the HF Dataset Server, the bundled helper avoids the
+optional `datasets` package and requires explicit config/split selection:
+
+```powershell
+python .\codex-skills\domain-training-data\scripts\hf_dataset.py inspect owner/dataset
+python .\codex-skills\domain-training-data\scripts\hf_dataset.py rows owner/dataset --config CONFIG --split SPLIT --limit 3
+```
+
+See the [functional and quality acceptance cases](docs/skill-test-cases.md)
+before relying on a new domain corpus.
+
+## Legacy web workspace
 
 ```text
 You: Make beginner QA about Python generators. Start with a small sample.
@@ -16,7 +60,7 @@ You: Focus more on common misconceptions, with fewer definition questions.
 You: This version looks good. Let me download it.
 ```
 
-The local chat workspace keeps the conversation, sample previews, source progress, usage, and dataset versions together. Changes to question style or language can reuse collected source text; a new topic starts a new collection. Previous versions remain available. Install `.[search]` to enable Hugging Face discovery. When the optional Kaggle integration is installed and configured, it can provide another dataset source.
+The local chat workspace keeps the conversation, sample previews, source progress, usage, and dataset versions together. It is retained for experiments with the older all-in-one QA pipeline; source selection, configuration choice, and dataset preparation are better handled by the Skill above.
 
 After installing the Python project below, build the chat controller with Node.js 22+ and Corepack:
 
